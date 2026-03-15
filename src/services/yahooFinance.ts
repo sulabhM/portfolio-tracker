@@ -15,12 +15,17 @@ function getBaseUrl(): string {
     : '/api/yahoo';
 }
 
+// Module path in variable so TS does not resolve it at build time (plugin only exists in Tauri).
+const TAURI_HTTP_MODULE = '@tauri-apps/plugin-http';
+
 let fetchImpl: Promise<typeof fetch> | null = null;
 function getFetch(): Promise<typeof fetch> {
   if (fetchImpl != null) return fetchImpl;
-  fetchImpl = isTauri()
-    ? import('@tauri-apps/plugin-http').then((m) => m.fetch)
-    : Promise.resolve(fetch);
+  if (isTauri()) {
+    fetchImpl = import(TAURI_HTTP_MODULE).then((m: { fetch: typeof fetch }) => m.fetch);
+  } else {
+    fetchImpl = Promise.resolve(fetch);
+  }
   return fetchImpl;
 }
 
