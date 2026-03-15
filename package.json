@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "overrides": {
+    "serialize-javascript": ">=7.0.3"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -17,7 +20,6 @@
   "dependencies": {
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-fs": "^2.4.5",
-    "@tauri-apps/plugin-http": "^2.5.7",
     "@tiptap/extension-highlight": "^3.20.1",
     "@tiptap/extension-placeholder": "^3.20.1",
     "@tiptap/extension-underline": "^3.20.1",
