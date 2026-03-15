@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-gain: #10b981;
+  --color-loss: #ef4444;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* TipTap editor styles */
+.tiptap {
+  outline: none;
+  min-height: 200px;
+}
+
+.tiptap p {
+  margin: 0.5em 0;
+}
+
+.tiptap h1 { font-size: 1.5em; font-weight: 700; margin: 0.5em 0; }
+.tiptap h2 { font-size: 1.25em; font-weight: 600; margin: 0.5em 0; }
+.tiptap h3 { font-size: 1.1em; font-weight: 600; margin: 0.5em 0; }
+
+.tiptap ul, .tiptap ol {
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+
+.tiptap ul { list-style: disc; }
+.tiptap ol { list-style: decimal; }
+
+.tiptap blockquote {
+  border-left: 3px solid #6366f1;
+  padding-left: 1em;
+  margin: 0.5em 0;
+  opacity: 0.8;
+}
+
+.tiptap code {
+  background: rgba(99, 102, 241, 0.15);
+  border-radius: 0.25em;
+  padding: 0.1em 0.3em;
+  font-size: 0.9em;
+}
+
+.tiptap pre {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 0.5em;
+  padding: 0.75em 1em;
+  margin: 0.5em 0;
+  overflow-x: auto;
+}
+
+.tiptap pre code {
+  background: none;
+  padding: 0;
+}
+
+.tiptap mark {
+  background-color: rgba(251, 191, 36, 0.4);
+  border-radius: 0.15em;
+  padding: 0.1em 0;
+}
+
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: #94a3b8;
+  pointer-events: none;
+  height: 0;
+}
+
+.tiptap hr {
+  border: none;
+  border-top: 1px solid #334155;
+  margin: 1em 0;
+}
