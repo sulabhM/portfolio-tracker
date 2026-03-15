@@ -6,13 +6,27 @@ const CACHE_DURATION_MS = 5 * 60 * 1000;
 
 const YAHOO_ORIGIN = 'https://query2.finance.yahoo.com';
 
-// In Tauri (desktop/Android), no CORS; use Yahoo directly.
+// In Tauri (desktop/Android), use Yahoo directly via native HTTP (no CORS).
 // In browser dev, Vite proxies /api/yahoo. In production PWA, set VITE_PRICE_PROXY_URL for CORS proxy.
 function getBaseUrl(): string {
   if (isTauri()) return YAHOO_ORIGIN;
   return import.meta.env.PROD
     ? (import.meta.env.VITE_PRICE_PROXY_URL ?? '')
     : '/api/yahoo';
+}
+
+let fetchImpl: Promise<typeof fetch> | null = null;
+function getFetch(): Promise<typeof fetch> {
+  if (fetchImpl != null) return fetchImpl;
+  fetchImpl = isTauri()
+    ? import('@tauri-apps/plugin-http').then((m) => m.fetch)
+    : Promise.resolve(fetch);
+  return fetchImpl;
+}
+
+async function yahooFetch(url: string, init?: RequestInit): Promise<Response> {
+  const f = await getFetch();
+  return f(url, init);
 }
 
 export interface TickerInfo {
@@ -36,7 +50,7 @@ export async function searchTickers(query: string): Promise<SearchQuote[]> {
   if (q.length < 1) return [];
   try {
     const url = `${getBaseUrl()}/v1/finance/search?q=${encodeURIComponent(q)}`;
-    const res = await fetch(url);
+    const res = await yahooFetch(url);
     if (!res.ok) return [];
     const data = await res.json();
     const quotes: unknown[] = data.quotes ?? [];
@@ -61,7 +75,7 @@ export async function lookupTicker(ticker: string): Promise<TickerInfo | null> {
   try {
     const key = ticker.toUpperCase().trim();
     const url = `${getBaseUrl()}/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=assetProfile,price,fundProfile`;
-    const res = await fetch(url);
+    const res = await yahooFetch(url);
     if (!res.ok) return null;
 
     const data = await res.json();
@@ -102,7 +116,7 @@ export async function fetchPrice(ticker: string): Promise<PriceData | null> {
 
   try {
     const url = `${getBaseUrl()}/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=price`;
-    const res = await fetch(url);
+    const res = await yahooFetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const data = await res.json();
@@ -164,7 +178,7 @@ export async function fetchMarketState(): Promise<MarketState> {
   }
   try {
     const url = `${getBaseUrl()}/v10/finance/quoteSummary/SPY?modules=price`;
-    const res = await fetch(url);
+    const res = await yahooFetch(url);
     if (!res.ok) return 'CLOSED';
     const json = await res.json();
     const state: MarketState =
@@ -216,7 +230,7 @@ export async function fetchDividendRate(
 
   try {
     const url = `${getBaseUrl()}/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=summaryDetail`;
-    const res = await fetch(url);
+    const res = await yahooFetch(url);
     if (!res.ok) return null;
 
     const data = await res.json();
@@ -281,7 +295,7 @@ export async function fetchTickerSummary(
 
   try {
     const url = `${getBaseUrl()}/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=price,summaryDetail,financialData`;
-    const res = await fetch(url);
+    const res = await yahooFetch(url);
     if (!res.ok) return null;
 
     const json = await res.json();
@@ -371,7 +385,7 @@ export async function fetchHistoricalPrices(
     const key = ticker.toUpperCase();
     const interval = range === '1d' ? '5m' : '1d';
     const url = `${getBaseUrl()}/v8/finance/chart/${encodeURIComponent(key)}?interval=${interval}&range=${range}`;
-    const res = await fetch(url);
+    const res = await yahooFetch(url);
     if (!res.ok) return [];
 
     const data = await res.json();
@@ -485,7 +499,7 @@ export async function fetchTickerProfile(
     const modules =
       'price,summaryDetail,assetProfile,financialData,defaultKeyStatistics,calendarEvents';
     const url = `${getBaseUrl()}/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=${modules}`;
-    const res = await fetch(url);
+    const res = await yahooFetch(url);
     if (!res.ok) return null;
 
     const json = await res.json();
@@ -592,7 +606,7 @@ export async function fetchDividendEvents(
     const now = Math.floor(Date.now() / 1000);
     const period1 = Math.floor(sinceDate.getTime() / 1000);
     const url = `${getBaseUrl()}/v8/finance/chart/${encodeURIComponent(key)}?interval=1d&period1=${period1}&period2=${now}&events=div`;
-    const res = await fetch(url);
+    const res = await yahooFetch(url);
     if (!res.ok) return [];
 
     const data = await res.json();
