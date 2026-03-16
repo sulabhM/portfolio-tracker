@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { Loader2, Check, X } from 'lucide-react';
 import { addHolding, updateHolding } from '../../db/hooks';
 import { lookupTicker } from '../../services/yahooFinance';
+import { isTauri } from '../../services/fileAdapter';
 import type { Holding } from '../../types';
 import { cn } from '../../utils/format';
 import { TickerSearchInput } from '../common/TickerSearchInput';
@@ -195,6 +196,11 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
           placeholder="Technology"
           className={inputClass}
         />
+        {isTauri() && (
+          <p className="text-xs text-gray-500 dark:text-slate-400 mt-1">
+            Sector and country are from Yahoo when available.
+          </p>
+        )}
       </div>
 
       {/* DRIP toggle */}

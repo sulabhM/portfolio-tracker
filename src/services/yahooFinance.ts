@@ -1,28 +1,58 @@
 import { db } from '../db/database';
 import type { PriceData } from '../types';
 import { isTauri } from './fileAdapter';
+import { debugLog } from './debugLog';
 
 const CACHE_DURATION_MS = 5 * 60 * 1000;
 
 const YAHOO_ORIGIN = 'https://query2.finance.yahoo.com';
+const CHART_ORIGIN = 'https://query1.finance.yahoo.com';
+const YAHOO_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-// In Tauri (desktop/Android), use Yahoo directly via native HTTP (no CORS).
+const YAHOO_PROXY_STORAGE_KEY = 'yahooProxyUrl';
+
+/** Call this to set optional proxy URL (e.g. from Settings). In Tauri, when set, quoteSummary/search use proxy instead of direct auth. */
+export function setYahooProxyUrl(url: string | null): void {
+  try {
+    if (url?.trim()) localStorage.setItem(YAHOO_PROXY_STORAGE_KEY, url.trim());
+    else localStorage.removeItem(YAHOO_PROXY_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function getYahooProxyUrl(): string | null {
+  try {
+    const u = localStorage.getItem(YAHOO_PROXY_STORAGE_KEY);
+    return u?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// In Tauri: use optional proxy URL if set (avoids cookie/crumb); else use Yahoo with auth.
 // In browser dev, Vite proxies /api/yahoo. In production PWA, set VITE_PRICE_PROXY_URL for CORS proxy.
 function getBaseUrl(): string {
-  if (isTauri()) return YAHOO_ORIGIN;
+  if (isTauri()) {
+    const proxy = getYahooProxyUrl();
+    if (proxy) return proxy.replace(/\/$/, '');
+    return YAHOO_ORIGIN;
+  }
   return import.meta.env.PROD
     ? (import.meta.env.VITE_PRICE_PROXY_URL ?? '')
     : '/api/yahoo';
 }
 
-// Module path in variable so TS does not resolve it at build time (plugin only exists in Tauri).
-const TAURI_HTTP_MODULE = '@tauri-apps/plugin-http';
+function isUsingYahooProxy(): boolean {
+  return isTauri() && !!getYahooProxyUrl();
+}
 
+// Use literal string so Vite can resolve and bundle the plugin (required for Tauri desktop).
 let fetchImpl: Promise<typeof fetch> | null = null;
 function getFetch(): Promise<typeof fetch> {
   if (fetchImpl != null) return fetchImpl;
   if (isTauri()) {
-    fetchImpl = import(TAURI_HTTP_MODULE).then((m: { fetch: typeof fetch }) => m.fetch);
+    fetchImpl = import('@tauri-apps/plugin-http').then((m: { fetch: typeof fetch }) => m.fetch);
   } else {
     fetchImpl = Promise.resolve(fetch);
   }
@@ -30,8 +60,62 @@ function getFetch(): Promise<typeof fetch> {
 }
 
 async function yahooFetch(url: string, init?: RequestInit): Promise<Response> {
+  // Tauri: use Rust backend for Yahoo auth (cookie+crumb) — no proxy needed.
+  if (isTauri() && url.startsWith(YAHOO_ORIGIN)) {
+    if (isUsingYahooProxy()) {
+      const f = await getFetch();
+      return f(url, { ...init, headers: { ...init?.headers, 'User-Agent': YAHOO_UA } });
+    }
+    const path = url.slice(YAHOO_ORIGIN.length).replace(/^\//, '');
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const [status, body] = await invoke<[number, string]>('fetch_yahoo', { path });
+      return new Response(body, { status, headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      debugLog.warn('Yahoo', 'Rust fetch_yahoo failed', err instanceof Error ? err.message : String(err));
+      return new Response(JSON.stringify({ error: 'Yahoo request failed' }), { status: 502 });
+    }
+  }
+
   const f = await getFetch();
+  if (isTauri()) return f(url, { ...init, headers: { ...init?.headers, 'User-Agent': YAHOO_UA } });
   return f(url, init);
+}
+
+// v8 chart endpoint works without auth in Tauri. Use for price/summary when quoteSummary returns 401.
+async function tauriFetchChart(
+  ticker: string,
+  range: string = '5d',
+  options?: { includePrePost?: boolean }
+): Promise<{ meta?: Record<string, unknown> } | null> {
+  if (!isTauri()) return null;
+  try {
+    const f = await getFetch();
+    let url = `${CHART_ORIGIN}/v8/finance/chart/${encodeURIComponent(ticker.toUpperCase())}?interval=1d&range=${range}`;
+    if (options?.includePrePost) url += '&includePrePost=true';
+    const res = await f(url, { headers: { 'User-Agent': YAHOO_UA } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const result = data?.chart?.result?.[0];
+    return result ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Map chart meta instrumentType/quoteType to a display sector when we don't have real sector data. */
+function instrumentTypeToSector(raw: string): string {
+  const u = raw.toUpperCase();
+  if (u === 'ETF') return 'ETF';
+  if (u === 'MUTUALFUND' || u === 'MUTUAL FUND') return 'Mutual Fund';
+  if (u === 'INDEX') return 'Index';
+  if (u === 'CRYPTOCURRENCY' || u === 'CRYPTO') return 'Crypto';
+  if (u === 'CURRENCY') return 'Currency';
+  if (u === 'FUTURE' || u === 'FUTURES') return 'Futures';
+  if (u === 'OPTION' || u === 'OPTIONS') return 'Options';
+  if (u === 'EQUITY' || u === 'STOCK') return 'Equity';
+  if (u.length > 0) return raw; // e.g. "COMMODITY" or other known type
+  return 'Other';
 }
 
 export interface TickerInfo {
@@ -50,35 +134,107 @@ export interface SearchQuote {
   typeDisp?: string;
 }
 
+function parseSearchQuotes(data: { quotes?: unknown[] }): SearchQuote[] {
+  const quotes: unknown[] = data.quotes ?? [];
+  return quotes
+    .filter((x): x is Record<string, unknown> => x != null && typeof x === 'object')
+    .map((x) => ({
+      symbol: String(x.symbol ?? ''),
+      shortname: x.shortname != null ? String(x.shortname) : undefined,
+      longname: x.longname != null ? String(x.longname) : undefined,
+      quoteType: String(x.quoteType ?? ''),
+      exchange: x.exchange != null ? String(x.exchange) : undefined,
+      typeDisp: x.typeDisp != null ? String(x.typeDisp) : undefined,
+    }))
+    .filter((item) => item.symbol.length > 0);
+}
+
 export async function searchTickers(query: string): Promise<SearchQuote[]> {
   const q = query.trim();
   if (q.length < 1) return [];
   try {
+    // Tauri: try search endpoint with no auth; if that fails, treat query as a ticker and use chart.
+    if (isTauri()) {
+      const f = await getFetch();
+      const url = `${CHART_ORIGIN}/v1/finance/search?q=${encodeURIComponent(q)}`;
+      const res = await f(url, { headers: { 'User-Agent': YAHOO_UA } });
+      if (res.ok) {
+        const data = await res.json();
+        const results = parseSearchQuotes(data);
+        if (results.length > 0) {
+          debugLog.info('Yahoo', 'Search from no-auth endpoint', `${results.length} results`);
+          return results;
+        }
+      }
+      // Fallback: if query looks like a ticker symbol, fetch chart and return one result.
+      const tickerLike = /^[A-Z0-9.]{1,6}$/i.test(q);
+      if (tickerLike) {
+        const key = q.toUpperCase();
+        const chartResult = await tauriFetchChart(key);
+        const meta = chartResult?.meta;
+        if (meta && (meta.shortName != null || meta.longName != null || meta.regularMarketPrice != null)) {
+          const name = (meta.shortName ?? meta.longName ?? key) as string;
+          debugLog.info('Yahoo', 'Search fallback: ticker from chart', key);
+          return [{ symbol: key, shortname: name, longname: name, quoteType: (meta.instrumentType ?? 'EQUITY') as string }];
+        }
+      }
+    }
+
     const url = `${getBaseUrl()}/v1/finance/search?q=${encodeURIComponent(q)}`;
     const res = await yahooFetch(url);
     if (!res.ok) return [];
     const data = await res.json();
-    const quotes: unknown[] = data.quotes ?? [];
-    return quotes
-      .filter((x): x is Record<string, unknown> => x != null && typeof x === 'object')
-      .map((x) => ({
-        symbol: String(x.symbol ?? ''),
-        shortname: x.shortname != null ? String(x.shortname) : undefined,
-        longname: x.longname != null ? String(x.longname) : undefined,
-        quoteType: String(x.quoteType ?? ''),
-        exchange: x.exchange != null ? String(x.exchange) : undefined,
-        typeDisp: x.typeDisp != null ? String(x.typeDisp) : undefined,
-      }))
-      .filter((item) => item.symbol.length > 0);
+    return parseSearchQuotes(data);
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.warn('Ticker search failed:', err);
+    debugLog.warn('Yahoo', 'Ticker search failed', msg);
     return [];
   }
 }
 
 export async function lookupTicker(ticker: string): Promise<TickerInfo | null> {
+  const key = ticker.toUpperCase().trim();
+
+  // Tauri: try quoteSummary first (Rust backend does cookie+crumb) for sector/country; fall back to chart if needed.
+  if (isTauri() && !isUsingYahooProxy()) {
+    try {
+      const url = `${getBaseUrl()}/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=assetProfile,price,fundProfile`;
+      const res = await yahooFetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const result = data.quoteSummary?.result?.[0];
+        if (result) {
+          const price = result.price ?? {};
+          const profile = result.assetProfile ?? {};
+          const fund = result.fundProfile ?? {};
+          let sector = profile.sector ?? '';
+          if (!sector && fund.categoryName) sector = `ETF: ${fund.categoryName}`;
+          debugLog.info('Yahoo', `Lookup from quoteSummary for ${key}`, price.longName ?? price.shortName);
+          return {
+            name: price.longName ?? price.shortName ?? key,
+            sector: sector || 'Other',
+            country: (profile.country as string)?.trim() || '',
+            quoteType: price.quoteType ?? 'EQUITY',
+          };
+        }
+      }
+    } catch {
+      /* fall through to chart */
+    }
+    const chartResult = await tauriFetchChart(key);
+    const meta = chartResult?.meta;
+    if (meta && (meta.regularMarketPrice != null || meta.shortName != null || meta.longName != null)) {
+      const name = (meta.shortName ?? meta.longName ?? key) as string;
+      const rawType = (meta.instrumentType ?? meta.quoteType ?? 'EQUITY') as string;
+      const sector = instrumentTypeToSector(rawType || 'EQUITY');
+      debugLog.info('Yahoo', `Lookup from chart for ${key}`, name);
+      return { name: name || key, sector, country: '', quoteType: rawType || 'EQUITY' };
+    }
+    return null;
+  }
+
   try {
-    const key = ticker.toUpperCase().trim();
     const url = `${getBaseUrl()}/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=assetProfile,price,fundProfile`;
     const res = await yahooFetch(url);
     if (!res.ok) return null;
@@ -106,7 +262,9 @@ export async function lookupTicker(ticker: string): Promise<TickerInfo | null> {
       quoteType,
     };
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.warn(`Ticker lookup failed for ${ticker}:`, err);
+    debugLog.warn('Yahoo', `Lookup failed for ${ticker}`, msg);
     return null;
   }
 }
@@ -168,7 +326,9 @@ export async function fetchPrice(ticker: string): Promise<PriceData | null> {
     await db.priceCache.put(priceData);
     return priceData;
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.warn(`Failed to fetch price for ${key}:`, err);
+    debugLog.warn('Yahoo', `Price fetch failed for ${key}`, msg);
     return cached ?? null;
   }
 }
@@ -357,7 +517,9 @@ export async function fetchTickerSummary(
     summaryCache.set(key, { data: result, at: Date.now() });
     return result;
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.warn(`Failed to fetch summary for ${key}:`, err);
+    debugLog.warn('Yahoo', `Summary fetch failed for ${key}`, msg);
     return null;
   }
 }
@@ -386,9 +548,32 @@ export async function fetchHistoricalPrices(
   ticker: string,
   range: ChartRange = '1y'
 ): Promise<HistoricalPrice[]> {
+  const key = ticker.toUpperCase();
+  const interval = range === '1d' ? '5m' : '1d';
+
+  // Chart endpoint is the only Yahoo API that returns historical time series (timestamp + OHLC). quoteSummary has no history.
+  if (isTauri()) {
+    try {
+      const f = await getFetch();
+      const url = `${CHART_ORIGIN}/v8/finance/chart/${encodeURIComponent(key)}?interval=${interval}&range=${range}`;
+      const res = await f(url, { headers: { 'User-Agent': YAHOO_UA } });
+      if (!res.ok) return [];
+      const data = await res.json();
+      const result = data?.chart?.result?.[0];
+      if (!result) return [];
+      const timestamps: number[] = result.timestamp ?? [];
+      const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
+      const prices: HistoricalPrice[] = [];
+      for (let i = 0; i < timestamps.length; i++) {
+        if (closes[i] != null) prices.push({ date: timestamps[i], close: closes[i]! });
+      }
+      return prices;
+    } catch {
+      return [];
+    }
+  }
+
   try {
-    const key = ticker.toUpperCase();
-    const interval = range === '1d' ? '5m' : '1d';
     const url = `${getBaseUrl()}/v8/finance/chart/${encodeURIComponent(key)}?interval=${interval}&range=${range}`;
     const res = await yahooFetch(url);
     if (!res.ok) return [];

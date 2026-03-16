@@ -12,7 +12,10 @@
       "identifier": "http:default",
       "allow": [
         { "url": "https://query2.finance.yahoo.com/**" },
-        { "url": "https://fc.yahoo.com/**" }
+        { "url": "https://query1.finance.yahoo.com/**" },
+        { "url": "https://fc.yahoo.com/**" },
+        { "url": "https://finance.yahoo.com/**" },
+        { "url": "http://localhost:*/**" }
       ]
     },
     "dialog:default",
