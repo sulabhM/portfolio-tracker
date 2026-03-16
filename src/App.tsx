@@ -6,6 +6,7 @@ import { Transactions } from './pages/Transactions';
 import { Research } from './pages/Research';
 import { Watchlist } from './pages/Watchlist';
 import { Settings } from './pages/Settings';
+import { Debug } from './pages/Debug';
 import { useDividendSync } from './hooks/useDividendSync';
 import { useBackfillHoldingCountries } from './hooks/useBackfillHoldingCountries';
 import { ExtendedHoursProvider } from './contexts/ExtendedHoursContext';
@@ -31,6 +32,7 @@ export default function App() {
           <Route path="/research" element={<Research />} />
           <Route path="/research/:noteId" element={<Research />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/debug" element={<Debug />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AppLayout>
