@@ -752,21 +752,33 @@ function WatchlistRow({
           onClick={stopProp}
         >
           <button
-            onClick={() => setShowIVInput(!showIVInput)}
+            type="button"
+            onClick={(e) => {
+              stopProp(e);
+              setShowIVInput(!showIVInput);
+            }}
             className="p-1 rounded text-gray-400 hover:text-amber-500 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
             title="Set intrinsic value"
           >
             <Target size={14} />
           </button>
           <button
-            onClick={onRowClick}
+            type="button"
+            onClick={(e) => {
+              stopProp(e);
+              onRowClick();
+            }}
             className="p-1 rounded text-gray-400 hover:text-indigo-500 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
             title="Price vs Intrinsic chart"
           >
             <LineChart size={14} />
           </button>
           <button
-            onClick={() => setShowTagEditor(!showTagEditor)}
+            type="button"
+            onClick={(e) => {
+              stopProp(e);
+              setShowTagEditor(!showTagEditor);
+            }}
             className="p-1 rounded text-gray-400 hover:text-indigo-500 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
             title="Edit tags"
           >
@@ -774,7 +786,11 @@ function WatchlistRow({
           </button>
           {!inPortfolio && (
             <button
-              onClick={() => void handleRemoveFromWatchlist()}
+              type="button"
+              onClick={(e) => {
+                stopProp(e);
+                void handleRemoveFromWatchlist();
+              }}
               className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
               title="Remove from watchlist"
             >

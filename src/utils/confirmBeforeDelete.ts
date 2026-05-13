@@ -1,10 +1,12 @@
+import { requestConfirm } from './confirmBridge';
+
 /**
- * Single-step delete: one click opens a confirmation dialog; the callback runs only if the user accepts.
+ * Single-step delete: asks for confirmation (in-app modal when available), then runs the callback only if accepted.
  */
 export async function confirmBeforeDelete(
   message: string,
   performDelete: () => void | Promise<void>
 ): Promise<void> {
-  if (!window.confirm(message)) return;
+  if (!(await requestConfirm(message))) return;
   await performDelete();
 }

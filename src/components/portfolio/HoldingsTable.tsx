@@ -232,7 +232,11 @@ export function HoldingsTable({
                         <Pencil size={14} />
                       </button>
                       <button
-                        onClick={() => h.id != null && handleDelete(h.id, h.ticker)}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (h.id != null) void handleDelete(h.id, h.ticker);
+                        }}
                         className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500"
                         title="Remove holding"
                       >
@@ -270,7 +274,11 @@ export function HoldingsTable({
                     <Pencil size={14} />
                   </button>
                   <button
-                    onClick={() => h.id != null && handleDelete(h.id, h.ticker)}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (h.id != null) void handleDelete(h.id, h.ticker);
+                    }}
                     className="p-1.5 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
                     title="Remove holding"
                   >
