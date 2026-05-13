@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import {
   Trash2,
   ArrowUpRight,
@@ -8,6 +7,7 @@ import {
 import type { Transaction } from '../../types';
 import { deleteTransaction } from '../../db/hooks';
 import { formatCurrency, formatDate, cn } from '../../utils/format';
+import { confirmBeforeDelete } from '../../utils/confirmBeforeDelete';
 
 interface TransactionListProps {
   transactions: Transaction[];
@@ -20,16 +20,12 @@ export function TransactionList({
   filterType,
   onFilterChange,
 }: TransactionListProps) {
-  const [deletingId, setDeletingId] = useState<number | null>(null);
-
-  async function handleDelete(id: number) {
-    if (deletingId === id) {
-      await deleteTransaction(id);
-      setDeletingId(null);
-    } else {
-      setDeletingId(id);
-      setTimeout(() => setDeletingId(null), 3000);
-    }
+  async function handleDelete(tx: Transaction) {
+    if (tx.id == null) return;
+    await confirmBeforeDelete(
+      `Delete this ${tx.type} for ${tx.ticker} (${tx.shares} shares @ ${formatCurrency(tx.price)} on ${formatDate(tx.date)})?`,
+      () => deleteTransaction(tx.id!)
+    );
   }
 
   function typeIcon(type: string) {
@@ -112,13 +108,9 @@ export function TransactionList({
               </p>
             </div>
             <button
-              onClick={() => tx.id && handleDelete(tx.id)}
-              className={cn(
-                'p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20',
-                deletingId === tx.id
-                  ? 'text-red-500'
-                  : 'text-gray-400 hover:text-red-500'
-              )}
+              onClick={() => handleDelete(tx)}
+              className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500"
+              title="Delete transaction"
             >
               <Trash2 size={14} />
             </button>

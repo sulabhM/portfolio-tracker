@@ -21,6 +21,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useHoldings, updateNote, deleteNote } from '../../db/hooks';
 import type { Note } from '../../types';
 import { cn } from '../../utils/format';
+import { confirmBeforeDelete } from '../../utils/confirmBeforeDelete';
 
 interface NoteEditorProps {
   note: Note;
@@ -100,8 +101,15 @@ export function NoteEditor({ note, onBack }: NoteEditorProps) {
   }
 
   async function handleDelete() {
-    if (note.id) await deleteNote(note.id);
-    onBack();
+    if (note.id == null) return;
+    const label = title.trim() || 'this note';
+    await confirmBeforeDelete(
+      `Delete "${label}"? This cannot be undone.`,
+      async () => {
+        await deleteNote(note.id!);
+        onBack();
+      }
+    );
   }
 
   const inputClass =

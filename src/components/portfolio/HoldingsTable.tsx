@@ -4,6 +4,7 @@ import type { Holding, PriceData } from '../../types';
 import { deleteHolding } from '../../db/hooks';
 import { useEffectivePrice } from '../../hooks/useEffectivePrice';
 import { formatCurrency, formatPercent, cn } from '../../utils/format';
+import { confirmBeforeDelete } from '../../utils/confirmBeforeDelete';
 import type { DividendRateData } from '../../services/yahooFinance';
 
 type SortCol = 'ticker' | 'name' | 'shares' | 'avgCost' | 'price' | 'mktValue' | 'pnl' | 'dayChg' | 'dividend';
@@ -55,7 +56,6 @@ export function HoldingsTable({
   dividendRates = new Map(),
   onEdit,
 }: HoldingsTableProps) {
-  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [sortCol, setSortCol] = useState<SortCol>('ticker');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const resolve = useEffectivePrice();
@@ -118,14 +118,11 @@ export function HoldingsTable({
     }
   }
 
-  async function handleDelete(id: number) {
-    if (deletingId === id) {
-      await deleteHolding(id);
-      setDeletingId(null);
-    } else {
-      setDeletingId(id);
-      setTimeout(() => setDeletingId(null), 3000);
-    }
+  async function handleDelete(id: number, ticker: string) {
+    await confirmBeforeDelete(
+      `Remove ${ticker} from your portfolio? This cannot be undone.`,
+      () => deleteHolding(id)
+    );
   }
 
   return (
@@ -235,13 +232,9 @@ export function HoldingsTable({
                         <Pencil size={14} />
                       </button>
                       <button
-                        onClick={() => h.id && handleDelete(h.id)}
-                        className={cn(
-                          'p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20',
-                          deletingId === h.id
-                            ? 'text-red-500'
-                            : 'text-gray-400 hover:text-red-500'
-                        )}
+                        onClick={() => h.id != null && handleDelete(h.id, h.ticker)}
+                        className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500"
+                        title="Remove holding"
                       >
                         <Trash2 size={14} />
                       </button>
@@ -277,13 +270,9 @@ export function HoldingsTable({
                     <Pencil size={14} />
                   </button>
                   <button
-                    onClick={() => h.id && handleDelete(h.id)}
-                    className={cn(
-                      'p-1.5 rounded',
-                      deletingId === h.id
-                        ? 'text-red-500'
-                        : 'text-gray-400'
-                    )}
+                    onClick={() => h.id != null && handleDelete(h.id, h.ticker)}
+                    className="p-1.5 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                    title="Remove holding"
                   >
                     <Trash2 size={14} />
                   </button>
