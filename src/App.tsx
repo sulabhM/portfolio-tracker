@@ -12,6 +12,7 @@ import { useBackfillHoldingCountries } from './hooks/useBackfillHoldingCountries
 import { ExtendedHoursProvider } from './contexts/ExtendedHoursContext';
 import { RefreshTimerProvider } from './contexts/RefreshTimerContext';
 import { DataSyncProvider } from './contexts/DataSyncContext';
+import { ConfirmDialogProvider } from './contexts/ConfirmDialogProvider';
 import { SyncConflictDialog } from './components/common/SyncConflictDialog';
 
 export default function App() {
@@ -20,6 +21,7 @@ export default function App() {
 
   return (
     <DataSyncProvider>
+    <ConfirmDialogProvider>
     <SyncConflictDialog />
     <RefreshTimerProvider>
     <ExtendedHoursProvider>
@@ -38,6 +40,7 @@ export default function App() {
       </AppLayout>
     </ExtendedHoursProvider>
     </RefreshTimerProvider>
+    </ConfirmDialogProvider>
     </DataSyncProvider>
   );
 }
