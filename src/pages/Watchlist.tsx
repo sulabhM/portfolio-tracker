@@ -115,6 +115,11 @@ export function Watchlist() {
     syncPortfolioToWatchlist();
   }, [holdingsKey]);
 
+  const portfolioTickerSet = useMemo(
+    () => new Set(holdings.map((h) => h.ticker.toUpperCase())),
+    [holdings]
+  );
+
   const tickerKey = items.map((w) => w.ticker).join(',');
 
   const fetchAll = useCallback(async () => {
@@ -359,6 +364,7 @@ export function Watchlist() {
             <WatchlistRow
               key={item.id}
               item={item}
+              inPortfolio={portfolioTickerSet.has(item.ticker.toUpperCase())}
               summary={summaries.get(item.ticker)}
               latestIV={latestIVs.get(item.ticker)}
               loading={loading}
@@ -418,12 +424,15 @@ function SortHeader({
 
 function WatchlistRow({
   item,
+  inPortfolio,
   summary,
   latestIV,
   loading,
   onRowClick,
 }: {
   item: { id?: number; ticker: string; name: string; tags: string[] };
+  /** True if this ticker is currently held — controls remove-from-watchlist vs portfolio lock. */
+  inPortfolio: boolean;
   summary: TickerSummary | undefined;
   latestIV: IntrinsicValue | undefined;
   loading: boolean;
@@ -434,7 +443,6 @@ function WatchlistRow({
   const [showIVInput, setShowIVInput] = useState(false);
   const [ivInput, setIvInput] = useState('');
   const [tagInput, setTagInput] = useState('');
-  const isPortfolio = item.tags.includes('portfolio');
 
   const hasExt = extendedHours && summary?.extPrice != null;
   const price = hasExt ? summary!.extPrice! : (summary?.price ?? 0);
@@ -748,11 +756,11 @@ function WatchlistRow({
           >
             <Tag size={14} />
           </button>
-          {!isPortfolio && (
+          {!inPortfolio && (
             <button
               onClick={() => item.id && deleteWatchlistItem(item.id)}
               className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
-              title="Remove"
+              title="Remove from watchlist"
             >
               <Trash2 size={14} />
             </button>

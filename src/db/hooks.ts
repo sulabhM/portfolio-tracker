@@ -72,17 +72,20 @@ export async function addHolding(
     createdAt: now,
     updatedAt: now,
   });
+  await syncPortfolioToWatchlist();
   notifyDataChanged();
   return id;
 }
 
 export async function updateHolding(id: number, changes: Partial<Holding>) {
   await db.holdings.update(id, { ...changes, updatedAt: new Date() });
+  await syncPortfolioToWatchlist();
   notifyDataChanged();
 }
 
 export async function deleteHolding(id: number) {
   await db.holdings.delete(id);
+  await syncPortfolioToWatchlist();
   notifyDataChanged();
 }
 
@@ -284,11 +287,7 @@ export async function syncPortfolioToWatchlist() {
     for (const w of existing) {
       if (w.tags.includes(portfolioTag) && !holdingTickers.has(w.ticker)) {
         const newTags = w.tags.filter((t) => t !== portfolioTag);
-        if (newTags.length === 0) {
-          await db.watchlist.delete(w.id!);
-        } else {
-          await db.watchlist.update(w.id!, { tags: newTags });
-        }
+        await db.watchlist.update(w.id!, { tags: newTags });
       }
     }
   });
