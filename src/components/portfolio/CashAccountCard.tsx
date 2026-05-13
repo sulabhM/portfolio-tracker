@@ -6,7 +6,8 @@ import {
   updateCashAccount,
   deleteCashAccount,
 } from '../../db/hooks';
-import { formatCurrency, cn } from '../../utils/format';
+import { formatCurrency } from '../../utils/format';
+import { confirmBeforeDelete } from '../../utils/confirmBeforeDelete';
 import { Modal } from '../common/Modal';
 
 interface CashAccountsCardProps {
@@ -16,7 +17,6 @@ interface CashAccountsCardProps {
 export function CashAccountsCard({ accounts }: CashAccountsCardProps) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<CashAccount | undefined>();
-  const [deletingId, setDeletingId] = useState<number | null>(null);
   const totalCash = accounts.reduce((sum, a) => sum + a.balance, 0);
 
   function handleEdit(account: CashAccount) {
@@ -29,14 +29,12 @@ export function CashAccountsCard({ accounts }: CashAccountsCardProps) {
     setEditing(undefined);
   }
 
-  async function handleDelete(id: number) {
-    if (deletingId === id) {
-      await deleteCashAccount(id);
-      setDeletingId(null);
-    } else {
-      setDeletingId(id);
-      setTimeout(() => setDeletingId(null), 3000);
-    }
+  async function handleDelete(account: CashAccount) {
+    if (account.id == null) return;
+    await confirmBeforeDelete(
+      `Delete cash account "${account.name}" (${formatCurrency(account.balance)})? This cannot be undone.`,
+      () => deleteCashAccount(account.id!)
+    );
   }
 
   return (
@@ -93,13 +91,9 @@ export function CashAccountsCard({ accounts }: CashAccountsCardProps) {
                     <Pencil size={14} />
                   </button>
                   <button
-                    onClick={() => account.id && handleDelete(account.id)}
-                    className={cn(
-                      'p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20',
-                      deletingId === account.id
-                        ? 'text-red-500'
-                        : 'text-gray-400 hover:text-red-500'
-                    )}
+                    onClick={() => handleDelete(account)}
+                    className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500"
+                    title="Delete account"
                   >
                     <Trash2 size={14} />
                   </button>

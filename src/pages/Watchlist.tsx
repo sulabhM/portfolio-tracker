@@ -43,6 +43,7 @@ import {
 import type { TickerSummary, HistoricalPrice, ChartRange } from '../services/yahooFinance';
 import type { IntrinsicValue } from '../types';
 import { formatCurrency, cn } from '../utils/format';
+import { confirmBeforeDelete } from '../utils/confirmBeforeDelete';
 
 const RECOMMENDATION_TAGS = ['strong_buy', 'buy', 'hold', 'sell', 'strong_sell'] as const;
 
@@ -501,6 +502,14 @@ function WatchlistRow({
     e.stopPropagation();
   }
 
+  async function handleRemoveFromWatchlist() {
+    if (item.id == null) return;
+    await confirmBeforeDelete(
+      `Remove ${item.ticker} from your watchlist?`,
+      () => deleteWatchlistItem(item.id!)
+    );
+  }
+
   return (
     <div className="border-b border-gray-50 dark:border-slate-800/50 last:border-b-0">
       <div
@@ -758,7 +767,7 @@ function WatchlistRow({
           </button>
           {!inPortfolio && (
             <button
-              onClick={() => item.id && deleteWatchlistItem(item.id)}
+              onClick={() => void handleRemoveFromWatchlist()}
               className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
               title="Remove from watchlist"
             >
@@ -890,6 +899,14 @@ function TickerDetailModal({
   const [ivDateInput, setIvDateInput] = useState(() => new Date().toISOString().slice(0, 10));
   const [activeTab, setActiveTab] = useState<'chart' | 'financials' | 'notes'>('chart');
   const tickerNotes = useNotes(undefined, ticker);
+
+  async function handleDeleteIntrinsicEntry(iv: IntrinsicValue) {
+    if (iv.id == null) return;
+    await confirmBeforeDelete(
+      `Delete intrinsic value ${formatCurrency(iv.value)} (${new Date(iv.date).toLocaleDateString()}) for ${ticker}?`,
+      () => deleteIntrinsicValue(iv.id!)
+    );
+  }
 
   const fetchRange = chartRange === 'custom' ? '10y' : chartRange;
 
@@ -1333,8 +1350,9 @@ function TickerDetailModal({
                         </span>
                       </div>
                       <button
-                        onClick={() => iv.id && deleteIntrinsicValue(iv.id)}
+                        onClick={() => void handleDeleteIntrinsicEntry(iv)}
                         className="p-1 rounded text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Delete this intrinsic value entry"
                       >
                         <Trash2 size={12} />
                       </button>
