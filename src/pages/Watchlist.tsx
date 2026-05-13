@@ -348,30 +348,34 @@ export function Watchlist() {
         />
       ) : (
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 overflow-hidden">
-          <div className="grid grid-cols-[1fr_90px_90px_90px_90px_90px_70px_70px_130px_70px] gap-2 px-4 py-2.5 text-xs font-medium text-gray-500 dark:text-slate-400 border-b border-gray-100 dark:border-slate-800">
-            <SortHeader label="Ticker" col="ticker" current={sortCol} dir={sortDir} onSort={toggleSort} />
-            <SortHeader label="Price" col="price" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
-            <SortHeader label="Change" col="change" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
-            <SortHeader label="Intrinsic" col="intrinsic" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
-            <SortHeader label="Target" col="target" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
-            <SortHeader label="Min(IV, T)" col="min" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
-            <SortHeader label="Div" col="dividend" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
-            <span className="text-right">Rec</span>
-            <span className="text-center">52w Range</span>
-            <span />
-          </div>
+          <div className="overflow-x-auto">
+            <div className="min-w-[1024px]">
+              <div className="grid grid-cols-[minmax(0,1fr)_90px_90px_90px_90px_90px_70px_70px_128px_128px] gap-2 px-4 py-2.5 text-xs font-medium text-gray-500 dark:text-slate-400 border-b border-gray-100 dark:border-slate-800">
+                <SortHeader label="Ticker" col="ticker" current={sortCol} dir={sortDir} onSort={toggleSort} />
+                <SortHeader label="Price" col="price" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
+                <SortHeader label="Change" col="change" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
+                <SortHeader label="Intrinsic" col="intrinsic" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
+                <SortHeader label="Target" col="target" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
+                <SortHeader label="Min(IV, T)" col="min" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
+                <SortHeader label="Div" col="dividend" current={sortCol} dir={sortDir} onSort={toggleSort} align="right" />
+                <span className="text-right">Rec</span>
+                <span className="text-center">52w Range</span>
+                <span className="text-right" aria-hidden />
+              </div>
 
-          {sorted.map((item) => (
-            <WatchlistRow
-              key={item.id}
-              item={item}
-              inPortfolio={portfolioTickerSet.has(item.ticker.toUpperCase())}
-              summary={summaries.get(item.ticker)}
-              latestIV={latestIVs.get(item.ticker)}
-              loading={loading}
-              onRowClick={() => setChartTicker(item.ticker)}
-            />
-          ))}
+              {sorted.map((item) => (
+                <WatchlistRow
+                  key={item.id}
+                  item={item}
+                  inPortfolio={portfolioTickerSet.has(item.ticker.toUpperCase())}
+                  summary={summaries.get(item.ticker)}
+                  latestIV={latestIVs.get(item.ticker)}
+                  loading={loading}
+                  onRowClick={() => setChartTicker(item.ticker)}
+                />
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -513,7 +517,7 @@ function WatchlistRow({
   return (
     <div className="border-b border-gray-50 dark:border-slate-800/50 last:border-b-0">
       <div
-        className="grid grid-cols-[1fr_90px_90px_90px_90px_90px_70px_70px_130px_70px] gap-2 px-4 py-3 items-center cursor-pointer hover:bg-gray-50/70 dark:hover:bg-slate-800/30 transition-colors"
+        className="grid grid-cols-[minmax(0,1fr)_90px_90px_90px_90px_90px_70px_70px_128px_128px] gap-2 px-4 py-3 items-center cursor-pointer hover:bg-gray-50/70 dark:hover:bg-slate-800/30 transition-colors"
         onClick={onRowClick}
       >
         {/* Ticker + name + tags */}
@@ -717,12 +721,12 @@ function WatchlistRow({
         </div>
 
         {/* 52w range */}
-        <div className="flex flex-col items-center gap-1">
+        <div className="flex flex-col items-center gap-1 min-w-0">
           {lo > 0 && hi > 0 ? (
             <>
-              <div className="w-full flex justify-between text-[10px] tabular-nums text-gray-500 dark:text-slate-400">
-                <span>{formatCurrency(lo)}</span>
-                <span>{formatCurrency(hi)}</span>
+              <div className="w-full grid grid-cols-2 gap-1 text-[10px] tabular-nums text-gray-500 dark:text-slate-400 min-w-0">
+                <span className="truncate min-w-0">{formatCurrency(lo)}</span>
+                <span className="truncate min-w-0 text-right">{formatCurrency(hi)}</span>
               </div>
               <div className="w-full h-1.5 rounded-full bg-gray-100 dark:bg-slate-800 relative">
                 <div
@@ -743,7 +747,10 @@ function WatchlistRow({
         </div>
 
         {/* Actions */}
-        <div className="flex items-center justify-end gap-0.5" onClick={stopProp}>
+        <div
+          className="flex items-center justify-end gap-0.5 flex-nowrap shrink-0 pl-1"
+          onClick={stopProp}
+        >
           <button
             onClick={() => setShowIVInput(!showIVInput)}
             className="p-1 rounded text-gray-400 hover:text-amber-500 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors"
