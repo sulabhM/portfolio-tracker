@@ -275,9 +275,9 @@ export function Dashboard() {
         />
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-6">
+      <div className="grid lg:grid-cols-2 gap-6 items-stretch">
         {/* Allocation */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5">
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5 flex flex-col h-full min-h-0">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
               <BarChart3 size={18} className="text-indigo-500" />
@@ -517,8 +517,8 @@ export function Dashboard() {
         </div>
 
         {/* Expected income breakdown */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5 flex flex-col h-full min-h-0">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2 shrink-0">
             <CalendarCheck size={18} className="text-indigo-500" />
             Expected Yearly Income
           </h2>
@@ -528,9 +528,9 @@ export function Dashboard() {
               No income-generating holdings or cash accounts yet.
             </p>
           ) : (
-            <>
+            <div className="flex flex-col flex-1 min-h-0">
               {/* Summary bar */}
-              <div className="flex items-center gap-4 mb-4 p-3 rounded-lg bg-gray-50 dark:bg-slate-800/50">
+              <div className="flex items-center gap-4 mb-4 p-3 rounded-lg bg-gray-50 dark:bg-slate-800/50 shrink-0">
                 <div className="flex-1">
                   <p className="text-xs text-gray-500 dark:text-slate-400">
                     Dividends
@@ -569,7 +569,7 @@ export function Dashboard() {
               </div>
 
               {/* Breakdown list */}
-              <div className="space-y-1.5 max-h-52 overflow-y-auto">
+              <div className="flex-1 min-h-0 space-y-1.5 overflow-y-auto">
                 {income.breakdown.map((item) => (
                   <div
                     key={`${item.type}-${item.ticker}`}
@@ -604,7 +604,7 @@ export function Dashboard() {
                   </div>
                 ))}
               </div>
-            </>
+            </div>
           )}
         </div>
       </div>
