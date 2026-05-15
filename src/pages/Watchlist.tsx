@@ -42,7 +42,13 @@ import {
 } from '../services/yahooFinance';
 import type { TickerSummary, HistoricalPrice, ChartRange } from '../services/yahooFinance';
 import type { IntrinsicValue } from '../types';
-import { formatCurrency, cn } from '../utils/format';
+import { formatMoney, cn } from '../utils/format';
+import {
+  DEFAULT_CURRENCY,
+  normalizeCurrency,
+  type CurrencyCode,
+} from '../constants/currencies';
+import { CurrencySelect } from '../components/common/CurrencySelect';
 import { confirmBeforeDelete } from '../utils/confirmBeforeDelete';
 
 const RECOMMENDATION_TAGS = ['strong_buy', 'buy', 'hold', 'sell', 'strong_sell'] as const;
@@ -447,8 +453,13 @@ function WatchlistRow({
   const [showTagEditor, setShowTagEditor] = useState(false);
   const [showIVInput, setShowIVInput] = useState(false);
   const [ivInput, setIvInput] = useState('');
+  const quoteCcy = normalizeCurrency(summary?.currency) ?? DEFAULT_CURRENCY;
+  const [ivCurrency, setIvCurrency] = useState<CurrencyCode>(quoteCcy);
   const [tagInput, setTagInput] = useState('');
 
+  useEffect(() => {
+    setIvCurrency(quoteCcy);
+  }, [quoteCcy]);
   const hasExt = extendedHours && summary?.extPrice != null;
   const price = hasExt ? summary!.extPrice! : (summary?.price ?? 0);
   const change = hasExt ? (summary!.extChange ?? 0) : (summary?.change ?? 0);
@@ -479,7 +490,7 @@ function WatchlistRow({
     e.preventDefault();
     const val = parseFloat(ivInput);
     if (isNaN(val) || val <= 0) return;
-    await addIntrinsicValue(item.ticker, val);
+    await addIntrinsicValue(item.ticker, val, undefined, ivCurrency);
     setIvInput('');
     setShowIVInput(false);
   }
@@ -565,7 +576,7 @@ function WatchlistRow({
         >
           {price > 0 ? (
             <>
-              {formatCurrency(price)}
+              {formatMoney(price, quoteCcy)}
               {hasExt && (
                 <span className="ml-0.5 text-[9px] text-amber-500 align-super">
                   EXT
@@ -586,7 +597,7 @@ function WatchlistRow({
                 )}
               >
                 {change >= 0 ? '+' : ''}
-                {formatCurrency(change)}
+                {formatMoney(change, quoteCcy)}
               </p>
               <p
                 className={cn(
@@ -622,7 +633,7 @@ function WatchlistRow({
                 <p className="text-sm font-medium tabular-nums text-gray-500 dark:text-slate-400">—</p>
               )}
               <p className="text-[10px] tabular-nums text-gray-500 dark:text-slate-400">
-                {formatCurrency(ivValue)}
+                {formatMoney(ivValue, latestIV?.currency ?? quoteCcy)}
               </p>
             </>
           ) : (
@@ -654,7 +665,7 @@ function WatchlistRow({
                 <p className="text-sm font-medium tabular-nums text-gray-500 dark:text-slate-400">—</p>
               )}
               <p className="text-[10px] tabular-nums text-gray-500 dark:text-slate-400">
-                {formatCurrency(targetMedian)}
+                {formatMoney(targetMedian, quoteCcy)}
               </p>
             </>
           ) : (
@@ -681,7 +692,7 @@ function WatchlistRow({
                 <p className="text-sm font-bold tabular-nums text-gray-500 dark:text-slate-400">—</p>
               )}
               <p className="text-[10px] tabular-nums text-gray-500 dark:text-slate-400">
-                {formatCurrency(minValue)}
+                {formatMoney(minValue, quoteCcy)}
               </p>
             </>
           ) : (
@@ -692,8 +703,8 @@ function WatchlistRow({
         {/* Dividend */}
         <div className="text-right text-sm tabular-nums text-gray-700 dark:text-slate-300">
           {summary && (summary.dividendYield > 0 || summary.dividendRate > 0) ? (
-            <span title={summary.dividendRate > 0 ? formatCurrency(summary.dividendRate) + '/yr' : ''}>
-              {summary.dividendYield > 0 ? `${summary.dividendYield.toFixed(2)}%` : formatCurrency(summary.dividendRate)}
+            <span title={summary.dividendRate > 0 ? formatMoney(summary.dividendRate, quoteCcy) + '/yr' : ''}>
+              {summary.dividendYield > 0 ? `${summary.dividendYield.toFixed(2)}%` : formatMoney(summary.dividendRate, quoteCcy)}
             </span>
           ) : (
             '—'
@@ -725,8 +736,8 @@ function WatchlistRow({
           {lo > 0 && hi > 0 ? (
             <>
               <div className="w-full grid grid-cols-2 gap-1 text-[10px] tabular-nums text-gray-500 dark:text-slate-400 min-w-0">
-                <span className="truncate min-w-0">{formatCurrency(lo)}</span>
-                <span className="truncate min-w-0 text-right">{formatCurrency(hi)}</span>
+                <span className="truncate min-w-0">{formatMoney(lo, quoteCcy)}</span>
+                <span className="truncate min-w-0 text-right">{formatMoney(hi, quoteCcy)}</span>
               </div>
               <div className="w-full h-1.5 rounded-full bg-gray-100 dark:bg-slate-800 relative">
                 <div
@@ -819,6 +830,11 @@ function WatchlistRow({
             placeholder={ivValue?.toString() ?? '0.00'}
             autoFocus
             className="px-2 py-1 text-xs rounded bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-indigo-500 w-28 tabular-nums"
+          />
+          <CurrencySelect
+            value={ivCurrency}
+            onChange={setIvCurrency}
+            className="px-1 py-1 text-xs rounded bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-indigo-500 max-w-[7rem]"
           />
           <button
             type="submit"
@@ -926,7 +942,7 @@ function TickerDetailModal({
   async function handleDeleteIntrinsicEntry(iv: IntrinsicValue) {
     if (iv.id == null) return;
     await confirmBeforeDelete(
-      `Delete intrinsic value ${formatCurrency(iv.value)} (${new Date(iv.date).toLocaleDateString()}) for ${ticker}?`,
+      `Delete intrinsic value ${formatMoney(iv.value, iv.currency)} (${new Date(iv.date).toLocaleDateString()}) for ${ticker}?`,
       () => deleteIntrinsicValue(iv.id!)
     );
   }
@@ -962,8 +978,14 @@ function TickerDetailModal({
     });
   }, [dataSpanDays]);
 
+  const quoteCcy = normalizeCurrency(summary?.currency) ?? DEFAULT_CURRENCY;
   const targetMedian = summary?.targetMedian ?? 0;
   const currentPrice = summary?.price ?? 0;
+  const [ivModalCurrency, setIvModalCurrency] = useState<CurrencyCode>(quoteCcy);
+
+  useEffect(() => {
+    setIvModalCurrency(quoteCcy);
+  }, [quoteCcy]);
 
   const chartData = useMemo(() => {
     let prices = historicalPrices;
@@ -1020,7 +1042,7 @@ function TickerDetailModal({
     const val = parseFloat(ivInput);
     if (isNaN(val) || val <= 0) return;
     const date = ivDateInput ? new Date(ivDateInput + 'T12:00:00') : new Date();
-    await addIntrinsicValue(ticker, val, date);
+    await addIntrinsicValue(ticker, val, date, ivModalCurrency);
     setIvInput('');
     setIvDateInput(new Date().toISOString().slice(0, 10));
   }
@@ -1081,7 +1103,7 @@ function TickerDetailModal({
                   Market Price
                 </p>
                 <p className="text-lg font-bold text-indigo-700 dark:text-indigo-300 tabular-nums">
-                  {currentPrice > 0 ? formatCurrency(currentPrice) : '—'}
+                  {currentPrice > 0 ? formatMoney(currentPrice, quoteCcy) : '—'}
                 </p>
               </div>
               <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40 p-3">
@@ -1089,7 +1111,7 @@ function TickerDetailModal({
                   Intrinsic Value
                 </p>
                 <p className="text-lg font-bold text-amber-700 dark:text-amber-300 tabular-nums">
-                  {latestIV ? formatCurrency(latestIV.value) : '—'}
+                  {latestIV ? formatMoney(latestIV.value, latestIV.currency ?? quoteCcy) : '—'}
                 </p>
                 {latestIV && currentPrice > 0 && (
                   <p className={cn(
@@ -1106,7 +1128,7 @@ function TickerDetailModal({
                   Analyst Target
                 </p>
                 <p className="text-lg font-bold text-cyan-700 dark:text-cyan-300 tabular-nums">
-                  {targetMedian > 0 ? formatCurrency(targetMedian) : '—'}
+                  {targetMedian > 0 ? formatMoney(targetMedian, quoteCcy) : '—'}
                 </p>
                 {targetMedian > 0 && currentPrice > 0 && (
                   <p className={cn(
@@ -1204,6 +1226,11 @@ function TickerDetailModal({
                 placeholder={latestIV?.value.toString() ?? '0.00'}
                 className="px-2 py-1.5 text-sm rounded-lg bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-indigo-500 w-28 tabular-nums"
               />
+              <CurrencySelect
+                value={ivModalCurrency}
+                onChange={setIvModalCurrency}
+                className="px-2 py-1.5 text-sm rounded-lg bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-indigo-500 max-w-[9rem]"
+              />
               <input
                 type="date"
                 value={ivDateInput}
@@ -1260,7 +1287,7 @@ function TickerDetailModal({
                     }}
                     labelStyle={{ color: '#94a3b8', marginBottom: 4 }}
                     formatter={(value, name) => [
-                      value != null ? formatCurrency(Number(value)) : '',
+                      value != null ? formatMoney(Number(value), quoteCcy) : '',
                       name === 'price'
                         ? 'Market Price'
                         : name === 'intrinsic'
@@ -1305,7 +1332,7 @@ function TickerDetailModal({
                       strokeDasharray="3 3"
                       strokeOpacity={0.5}
                       label={{
-                        value: `IV: ${formatCurrency(latestIV.value)}`,
+                        value: `IV: ${formatMoney(latestIV.value, latestIV.currency ?? quoteCcy)}`,
                         position: 'insideTopRight',
                         fill: '#f59e0b',
                         fontSize: 11,
@@ -1320,7 +1347,7 @@ function TickerDetailModal({
                       strokeDasharray="3 3"
                       strokeOpacity={0.5}
                       label={{
-                        value: `Target: ${formatCurrency(targetMedian)}`,
+                        value: `Target: ${formatMoney(targetMedian, quoteCcy)}`,
                         position: 'insideTopLeft',
                         fill: '#06b6d4',
                         fontSize: 11,
@@ -1369,7 +1396,7 @@ function TickerDetailModal({
                           {new Date(iv.date).toLocaleDateString()}
                         </span>
                         <span className="text-sm font-medium text-gray-900 dark:text-white tabular-nums">
-                          {formatCurrency(iv.value)}
+                          {formatMoney(iv.value, iv.currency ?? quoteCcy)}
                         </span>
                       </div>
                       <button

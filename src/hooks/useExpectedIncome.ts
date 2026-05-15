@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { fetchDividendRates } from '../services/yahooFinance';
 import type { DividendRateData } from '../services/yahooFinance';
 import type { Holding, CashAccount } from '../types';
+import { toUsd } from '../utils/portfolioCurrency';
 
 export interface IncomeItem {
   ticker: string;
@@ -12,7 +13,8 @@ export interface IncomeItem {
 
 export function useExpectedIncome(
   holdings: Holding[],
-  cashAccounts: CashAccount[]
+  cashAccounts: CashAccount[],
+  rates: Map<string, number>
 ) {
   const [divRates, setDivRates] = useState<Map<string, DividendRateData>>(
     new Map()
@@ -47,12 +49,13 @@ export function useExpectedIncome(
         const net = h.drip
           ? gross * (1 - (h.dividendTaxRate ?? 0))
           : gross;
-        dividendIncome += net;
+        const netUsd = toUsd(net, h.currency, rates);
+        dividendIncome += netUsd;
         breakdown.push({
           ticker: h.ticker,
           name: h.name,
           type: 'dividend',
-          annualAmount: net,
+          annualAmount: netUsd,
         });
       }
     }
@@ -67,12 +70,13 @@ export function useExpectedIncome(
         effectiveRate = Math.pow(1 + a.interestRate / 12, 12) - 1;
       }
       const income = a.balance * effectiveRate;
-      interestIncome += income;
+      const incomeUsd = toUsd(income, a.currency, rates);
+      interestIncome += incomeUsd;
       breakdown.push({
         ticker: a.name,
         name: a.name,
         type: 'interest',
-        annualAmount: income,
+        annualAmount: incomeUsd,
       });
     }
 
@@ -85,5 +89,5 @@ export function useExpectedIncome(
       breakdown,
       loading,
     };
-  }, [holdings, cashAccounts, divRates, loading]);
+  }, [holdings, cashAccounts, divRates, loading, rates]);
 }

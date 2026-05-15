@@ -3,7 +3,8 @@ import { Trash2, Pencil, TrendingUp, TrendingDown, ArrowUp, ArrowDown } from 'lu
 import type { Holding, PriceData } from '../../types';
 import { deleteHolding } from '../../db/hooks';
 import { useEffectivePrice } from '../../hooks/useEffectivePrice';
-import { formatCurrency, formatPercent, cn } from '../../utils/format';
+import { formatCurrency, formatMoney, formatPercent, cn } from '../../utils/format';
+import { quoteCurrency, toUsd } from '../../utils/portfolioCurrency';
 import { confirmBeforeDelete } from '../../utils/confirmBeforeDelete';
 import type { DividendRateData } from '../../services/yahooFinance';
 
@@ -12,6 +13,7 @@ type SortCol = 'ticker' | 'name' | 'shares' | 'avgCost' | 'price' | 'mktValue' |
 interface HoldingsTableProps {
   holdings: Holding[];
   prices: Map<string, PriceData>;
+  rates: Map<string, number>;
   dividendRates?: Map<string, DividendRateData>;
   onEdit: (holding: Holding) => void;
 }
@@ -53,6 +55,7 @@ function SortableTh({
 export function HoldingsTable({
   holdings,
   prices,
+  rates,
   dividendRates = new Map(),
   onEdit,
 }: HoldingsTableProps) {
@@ -64,22 +67,28 @@ export function HoldingsTable({
     return holdings.map((h) => {
       const raw = prices.get(h.ticker.toUpperCase());
       const ep = resolve(raw, h.avgCost);
-      const mktValue = h.shares * ep.price;
-      const pnlValue = (ep.price - h.avgCost) * h.shares;
+      const qCcy = quoteCurrency(raw, h);
+      const costCcy = h.currency;
+      const mktValueLocal = h.shares * ep.price;
+      const costLocal = h.shares * h.avgCost;
+      const mktValue = toUsd(mktValueLocal, qCcy, rates);
+      const costUsd = toUsd(costLocal, costCcy, rates);
+      const pnlValue = mktValue - costUsd;
       const div = dividendRates.get(h.ticker.toUpperCase());
       const dividendSort = div?.yieldPercent ?? div?.annualRate ?? -Infinity;
       return {
         holding: h,
         raw,
         ep,
+        qCcy,
         mktValue,
         pnlValue,
-        pnlPct: h.avgCost !== 0 ? (pnlValue / (h.shares * h.avgCost)) * 100 : 0,
+        pnlPct: costUsd !== 0 ? (pnlValue / costUsd) * 100 : 0,
         div,
         dividendSort,
       };
     });
-  }, [holdings, prices, dividendRates, resolve]);
+  }, [holdings, prices, dividendRates, resolve, rates]);
 
   const sortedRows = useMemo(() => {
     const dir = sortDir === 'asc' ? 1 : -1;
@@ -147,7 +156,7 @@ export function HoldingsTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
-            {sortedRows.map(({ holding: h, raw, ep, mktValue, pnlValue, pnlPct, div }) => (
+            {sortedRows.map(({ holding: h, raw, ep, qCcy, mktValue, pnlValue, pnlPct, div }) => (
                 <tr
                   key={h.id}
                   className="hover:bg-gray-50 dark:hover:bg-slate-800/30"
@@ -162,12 +171,12 @@ export function HoldingsTable({
                     {h.shares}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">
-                    {formatCurrency(h.avgCost)}
+                    {formatMoney(h.avgCost, h.currency)}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">
                     {raw ? (
                       <span>
-                        {formatCurrency(ep.price)}
+                        {formatMoney(ep.price, qCcy)}
                         {ep.isExtended && (
                           <span className="ml-1 text-[10px] text-amber-500">
                             EXT
@@ -216,8 +225,8 @@ export function HoldingsTable({
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-slate-300">
                     {div && (div.annualRate > 0 || div.yieldPercent > 0) ? (
-                      <span title={`${formatCurrency(div.annualRate)}/yr`}>
-                        {div.yieldPercent > 0 ? `${div.yieldPercent.toFixed(2)}%` : formatCurrency(div.annualRate)}
+                      <span title={`${formatMoney(div.annualRate, qCcy)}/yr`}>
+                        {div.yieldPercent > 0 ? `${div.yieldPercent.toFixed(2)}%` : formatMoney(div.annualRate, qCcy)}
                       </span>
                     ) : (
                       '—'
@@ -252,7 +261,7 @@ export function HoldingsTable({
 
       {/* Mobile cards */}
       <div className="md:hidden space-y-3">
-        {sortedRows.map(({ holding: h, raw, ep, mktValue, pnlValue, pnlPct, div }) => (
+        {sortedRows.map(({ holding: h, raw, ep, qCcy, mktValue, pnlValue, pnlPct, div }) => (
             <div
               key={h.id}
               className="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-4"
@@ -298,7 +307,7 @@ export function HoldingsTable({
                     Avg Cost:
                   </span>{' '}
                   <span className="font-medium tabular-nums">
-                    {formatCurrency(h.avgCost)}
+                    {formatMoney(h.avgCost, h.currency)}
                   </span>
                 </div>
                 <div>
@@ -306,7 +315,7 @@ export function HoldingsTable({
                     Price:
                   </span>{' '}
                   <span className="font-medium tabular-nums">
-                    {raw ? formatCurrency(ep.price) : '—'}
+                    {raw ? formatMoney(ep.price, qCcy) : '—'}
                     {ep.isExtended && (
                       <span className="ml-1 text-[10px] text-amber-500">
                         EXT
@@ -328,7 +337,7 @@ export function HoldingsTable({
                       Dividend:
                     </span>{' '}
                     <span className="font-medium tabular-nums">
-                      {div.yieldPercent > 0 ? `${div.yieldPercent.toFixed(2)}%` : formatCurrency(div.annualRate)}
+                      {div.yieldPercent > 0 ? `${div.yieldPercent.toFixed(2)}%` : formatMoney(div.annualRate, qCcy)}
                     </span>
                   </div>
                 )}

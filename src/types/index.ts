@@ -4,6 +4,8 @@ export interface Holding {
   name: string;
   shares: number;
   avgCost: number;
+  /** ISO 4217 currency for avgCost and cost basis. */
+  currency: string;
   sector: string;
   country: string;
   drip: boolean;
@@ -20,6 +22,8 @@ export interface Transaction {
   type: 'buy' | 'sell' | 'dividend' | 'interest';
   shares: number;
   price: number;
+  /** ISO 4217 currency for price (and dividend amounts). */
+  currency: string;
   date: Date;
   notes: string;
 }
@@ -36,6 +40,8 @@ export interface Note {
 
 export interface PriceData {
   ticker: string;
+  /** Quote currency from the exchange (ISO 4217). */
+  currency: string;
   price: number;
   change: number;
   changePercent: number;
@@ -49,6 +55,8 @@ export interface CashAccount {
   id?: number;
   name: string;
   balance: number;
+  /** ISO 4217 currency for balance. */
+  currency: string;
   interestRate: number;
   compoundFrequency: 'daily' | 'monthly' | 'none';
   lastInterestDate: Date;
@@ -67,6 +75,8 @@ export interface IntrinsicValue {
   id?: number;
   ticker: string;
   value: number;
+  /** ISO 4217 currency for value. */
+  currency: string;
   date: Date;
 }
 

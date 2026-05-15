@@ -1,9 +1,19 @@
+import { normalizeCurrencyWithDefault, DEFAULT_CURRENCY } from '../constants/currencies';
+
+/** Format a value in US dollars (portfolio totals, dashboard). */
 export function formatCurrency(value: number): string {
+  return formatMoney(value, DEFAULT_CURRENCY);
+}
+
+/** Format a value in the given ISO 4217 currency (quotes, per-holding amounts). */
+export function formatMoney(value: number, currency: string): string {
+  const code = normalizeCurrencyWithDefault(currency);
+  const fractionDigits = code === 'JPY' || code === 'KRW' ? 0 : 2;
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    currency: code,
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
   }).format(value);
 }
 

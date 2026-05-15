@@ -1,6 +1,8 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from './database';
 import { notifyDataChanged } from '../services/dataSyncRegistry';
+import { DEFAULT_CURRENCY, normalizeCurrencyWithDefault } from '../constants/currencies';
+import { fetchTickerCurrency } from '../services/tickerCurrency';
 import type { Holding, Transaction, Note, CashAccount, WatchlistItem, IntrinsicValue } from '../types';
 
 export function useHoldings() {
@@ -63,8 +65,12 @@ export async function addHolding(
   holding: Omit<Holding, 'id' | 'createdAt' | 'updatedAt'>
 ) {
   const now = new Date();
+  const reported =
+    (await fetchTickerCurrency(holding.ticker)) ??
+    normalizeCurrencyWithDefault(holding.currency);
   const id = await db.holdings.add({
     ...holding,
+    currency: reported,
     country: holding.country ?? '',
     drip: holding.drip ?? false,
     dividendTaxRate: holding.dividendTaxRate ?? 0,
@@ -92,7 +98,10 @@ export async function deleteHolding(id: number) {
 // ---- Transaction CRUD ----
 
 export async function addTransaction(tx: Omit<Transaction, 'id'>) {
-  const id = await db.transactions.add({ ...tx });
+  const id = await db.transactions.add({
+    ...tx,
+    currency: tx.currency ?? DEFAULT_CURRENCY,
+  });
   notifyDataChanged();
   return id;
 }
@@ -128,7 +137,11 @@ export async function deleteNote(id: number) {
 export async function addCashAccount(
   account: Omit<CashAccount, 'id' | 'createdAt'>
 ) {
-  const id = await db.cashAccounts.add({ ...account, createdAt: new Date() });
+  const id = await db.cashAccounts.add({
+    ...account,
+    currency: account.currency ?? DEFAULT_CURRENCY,
+    createdAt: new Date(),
+  });
   notifyDataChanged();
   return id;
 }
@@ -225,10 +238,19 @@ export function useLatestIntrinsicValues() {
   }) ?? new Map<string, IntrinsicValue>();
 }
 
-export async function addIntrinsicValue(ticker: string, value: number, date?: Date) {
+export async function addIntrinsicValue(
+  ticker: string,
+  value: number,
+  date?: Date,
+  currency?: string
+) {
+  const reported =
+    (await fetchTickerCurrency(ticker)) ??
+    normalizeCurrencyWithDefault(currency);
   const id = await db.intrinsicValues.add({
     ticker: ticker.toUpperCase(),
     value,
+    currency: reported,
     date: date ?? new Date(),
   });
   notifyDataChanged();

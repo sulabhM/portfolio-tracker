@@ -16,6 +16,8 @@ import { usePrices } from '../hooks/usePrices';
 import { useExpectedIncome } from '../hooks/useExpectedIncome';
 import { useMarketState } from '../hooks/useMarketState';
 import { useEffectivePrice } from '../hooks/useEffectivePrice';
+import { useExchangeRates } from '../hooks/useExchangeRates';
+import { collectPortfolioCurrencies, quoteCurrency, toUsd } from '../utils/portfolioCurrency';
 import { useRegisterRefresh } from '../contexts/RefreshTimerContext';
 import { formatCurrency, formatPercent, cn } from '../utils/format';
 import { EmptyState } from '../components/common/EmptyState';
@@ -51,16 +53,25 @@ export function Dashboard() {
   const navigate = useNavigate();
   const tickers = useMemo(() => holdings.map((h) => h.ticker), [holdings]);
   const { prices, loading, forceRefresh } = usePrices(tickers);
-  const income = useExpectedIncome(holdings, cashAccounts);
   const marketState = useMarketState();
   const resolve = useEffectivePrice();
+  const currencies = useMemo(
+    () => collectPortfolioCurrencies(holdings, cashAccounts, prices),
+    [holdings, cashAccounts, prices]
+  );
+  const { rates } = useExchangeRates(currencies);
+  const income = useExpectedIncome(holdings, cashAccounts, rates);
 
   const stableRefresh = useCallback(() => forceRefresh(), [forceRefresh]);
   useRegisterRefresh('dashboard-prices', stableRefresh);
 
   const totalCash = useMemo(
-    () => cashAccounts.reduce((sum, a) => sum + a.balance, 0),
-    [cashAccounts]
+    () =>
+      cashAccounts.reduce(
+        (sum, a) => sum + toUsd(a.balance, a.currency, rates),
+        0
+      ),
+    [cashAccounts, rates]
   );
 
   const stats = useMemo(() => {
@@ -71,9 +82,10 @@ export function Dashboard() {
     for (const h of holdings) {
       const p = prices.get(h.ticker.toUpperCase());
       const ep = resolve(p, h.avgCost);
-      holdingsValue += h.shares * ep.price;
-      totalCost += h.shares * h.avgCost;
-      dayChange += h.shares * ep.change;
+      const qCcy = quoteCurrency(p, h);
+      holdingsValue += toUsd(h.shares * ep.price, qCcy, rates);
+      totalCost += toUsd(h.shares * h.avgCost, h.currency, rates);
+      dayChange += toUsd(h.shares * ep.change, qCcy, rates);
     }
 
     const totalValue = holdingsValue + totalCash;
@@ -93,7 +105,7 @@ export function Dashboard() {
       dayChange,
       dayChangePercent,
     };
-  }, [holdings, prices, totalCash, resolve]);
+  }, [holdings, prices, totalCash, resolve, rates]);
 
   const incomeYield = useMemo(() => {
     if (stats.totalValue <= 0) return 0;
@@ -104,8 +116,9 @@ export function Dashboard() {
     const raw: AllocationRow[] = holdings.map((h) => {
       const p = prices.get(h.ticker.toUpperCase());
       const ep = resolve(p, h.avgCost);
-      const value = h.shares * ep.price;
-      const cost = h.shares * h.avgCost;
+      const qCcy = quoteCurrency(p, h);
+      const value = toUsd(h.shares * ep.price, qCcy, rates);
+      const cost = toUsd(h.shares * h.avgCost, h.currency, rates);
       const pnl = value - cost;
       const pnlPercent = cost !== 0 ? (pnl / cost) * 100 : 0;
       return { name: h.ticker, value, percent: 0, pnl, pnlPercent, isCash: false };
@@ -121,7 +134,7 @@ export function Dashboard() {
     }
 
     return raw.sort((a, b) => b.value - a.value);
-  }, [holdings, prices, totalCash, resolve]);
+  }, [holdings, prices, totalCash, resolve, rates]);
 
   const maxValue = useMemo(
     () => Math.max(...allocationData.map((r) => r.value), 1),
@@ -133,7 +146,8 @@ export function Dashboard() {
     for (const h of holdings) {
       const p = prices.get(h.ticker.toUpperCase());
       const ep = resolve(p, h.avgCost);
-      const value = h.shares * ep.price;
+      const qCcy = quoteCurrency(p, h);
+      const value = toUsd(h.shares * ep.price, qCcy, rates);
       const sector = h.sector?.trim() || 'Other';
       bySector.set(sector, (bySector.get(sector) ?? 0) + value);
     }
@@ -148,14 +162,15 @@ export function Dashboard() {
         percent: total > 0 ? (value / total) * 100 : 0,
       }))
       .sort((a, b) => b.value - a.value);
-  }, [holdings, prices, totalCash, resolve]);
+  }, [holdings, prices, totalCash, resolve, rates]);
 
   const countryAllocationData = useMemo(() => {
     const byCountry = new Map<string, number>();
     for (const h of holdings) {
       const p = prices.get(h.ticker.toUpperCase());
       const ep = resolve(p, h.avgCost);
-      const value = h.shares * ep.price;
+      const qCcy = quoteCurrency(p, h);
+      const value = toUsd(h.shares * ep.price, qCcy, rates);
       const country = (h.country ?? '').trim() || 'Other';
       byCountry.set(country, (byCountry.get(country) ?? 0) + value);
     }
@@ -170,7 +185,7 @@ export function Dashboard() {
         percent: total > 0 ? (value / total) * 100 : 0,
       }))
       .sort((a, b) => b.value - a.value);
-  }, [holdings, prices, totalCash, resolve]);
+  }, [holdings, prices, totalCash, resolve, rates]);
 
   const [allocationTab, setAllocationTab] = useState<'holding' | 'sector' | 'country'>('holding');
 
@@ -207,7 +222,7 @@ export function Dashboard() {
       {/* Stats cards */}
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
         <StatCard
-          label="Portfolio Value"
+          label="Portfolio Value (USD)"
           value={formatCurrency(stats.totalValue)}
           loading={loading}
           icon={<DollarSign size={18} />}

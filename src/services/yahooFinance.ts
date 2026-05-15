@@ -1,5 +1,6 @@
 import { db } from '../db/database';
 import type { PriceData } from '../types';
+import { normalizeCurrencyWithDefault } from '../constants/currencies';
 import { isTauri } from './fileAdapter';
 import { debugLog } from './debugLog';
 
@@ -32,7 +33,7 @@ export function getYahooProxyUrl(): string | null {
 
 // In Tauri: use optional proxy URL if set (avoids cookie/crumb); else use Yahoo with auth.
 // In browser dev, Vite proxies /api/yahoo. In production PWA, set VITE_PRICE_PROXY_URL for CORS proxy.
-function getBaseUrl(): string {
+export function getBaseUrl(): string {
   if (isTauri()) {
     const proxy = getYahooProxyUrl();
     if (proxy) return proxy.replace(/\/$/, '');
@@ -59,7 +60,7 @@ function getFetch(): Promise<typeof fetch> {
   return fetchImpl;
 }
 
-async function yahooFetch(url: string, init?: RequestInit): Promise<Response> {
+export async function yahooFetch(url: string, init?: RequestInit): Promise<Response> {
   // Tauri: use Rust backend for Yahoo auth (cookie+crumb) — no proxy needed.
   if (isTauri() && url.startsWith(YAHOO_ORIGIN)) {
     if (isUsingYahooProxy()) {
@@ -123,6 +124,12 @@ export interface TickerInfo {
   sector: string;
   country: string;
   quoteType: string;
+  currency: string;
+}
+
+function parseQuoteCurrency(priceModule: Record<string, unknown> | undefined): string {
+  const raw = priceModule?.currency;
+  return normalizeCurrencyWithDefault(typeof raw === 'string' ? raw : undefined);
 }
 
 export interface SearchQuote {
@@ -216,6 +223,7 @@ export async function lookupTicker(ticker: string): Promise<TickerInfo | null> {
             sector: sector || 'Other',
             country: (profile.country as string)?.trim() || '',
             quoteType: price.quoteType ?? 'EQUITY',
+            currency: parseQuoteCurrency(price),
           };
         }
       }
@@ -229,7 +237,13 @@ export async function lookupTicker(ticker: string): Promise<TickerInfo | null> {
       const rawType = (meta.instrumentType ?? meta.quoteType ?? 'EQUITY') as string;
       const sector = instrumentTypeToSector(rawType || 'EQUITY');
       debugLog.info('Yahoo', `Lookup from chart for ${key}`, name);
-      return { name: name || key, sector, country: '', quoteType: rawType || 'EQUITY' };
+      return {
+        name: name || key,
+        sector,
+        country: '',
+        quoteType: rawType || 'EQUITY',
+        currency: normalizeCurrencyWithDefault(meta.currency as string),
+      };
     }
     return null;
   }
@@ -260,6 +274,7 @@ export async function lookupTicker(ticker: string): Promise<TickerInfo | null> {
       sector: sector || 'Other',
       country,
       quoteType,
+      currency: parseQuoteCurrency(price),
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -317,6 +332,7 @@ export async function fetchPrice(ticker: string): Promise<PriceData | null> {
       price,
       change,
       changePercent,
+      currency: parseQuoteCurrency(p),
       extPrice,
       extChange,
       extChangePercent,
@@ -435,6 +451,7 @@ export async function fetchDividendRates(
 export interface TickerSummary {
   ticker: string;
   name: string;
+  currency: string;
   price: number;
   change: number;
   changePercent: number;
@@ -500,6 +517,7 @@ export async function fetchTickerSummary(
     const result: TickerSummary = {
       ticker: key,
       name: p.longName ?? p.shortName ?? key,
+      currency: parseQuoteCurrency(p),
       price: mktPrice,
       change,
       changePercent: changePct,

@@ -92,6 +92,50 @@ export class PortfolioDatabase extends Dexie {
             if (holding.country === undefined) holding.country = '';
           });
       });
+
+    this.version(6)
+      .stores({
+        holdings: '++id, ticker, sector',
+        transactions: '++id, holdingId, ticker, type, date',
+        notes: '++id, *tags, *tickerLinks',
+        priceCache: 'ticker',
+        cashAccounts: '++id, name',
+        dividendRecords: '++id, holdingId, ticker, [ticker+exDate]',
+        watchlist: '++id, ticker, *tags',
+        intrinsicValues: '++id, ticker, date',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('holdings')
+          .toCollection()
+          .modify((h: { currency?: string }) => {
+            if (h.currency === undefined) h.currency = 'USD';
+          });
+        await tx
+          .table('transactions')
+          .toCollection()
+          .modify((t: { currency?: string }) => {
+            if (t.currency === undefined) t.currency = 'USD';
+          });
+        await tx
+          .table('cashAccounts')
+          .toCollection()
+          .modify((c: { currency?: string }) => {
+            if (c.currency === undefined) c.currency = 'USD';
+          });
+        await tx
+          .table('intrinsicValues')
+          .toCollection()
+          .modify((iv: { currency?: string }) => {
+            if (iv.currency === undefined) iv.currency = 'USD';
+          });
+        await tx
+          .table('priceCache')
+          .toCollection()
+          .modify((p: { currency?: string }) => {
+            if (p.currency === undefined) p.currency = 'USD';
+          });
+      });
   }
 }
 

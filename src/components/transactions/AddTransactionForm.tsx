@@ -1,6 +1,13 @@
-import { useState, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { addTransaction, useHoldings } from '../../db/hooks';
+import {
+  DEFAULT_CURRENCY,
+  normalizeCurrencyWithDefault,
+  type CurrencyCode,
+} from '../../constants/currencies';
+import { fetchTickerCurrency } from '../../services/tickerCurrency';
 import { cn } from '../../utils/format';
+import { CurrencySelect } from '../common/CurrencySelect';
 
 interface AddTransactionFormProps {
   onDone: () => void;
@@ -18,18 +25,47 @@ export function AddTransactionForm({
   const [price, setPrice] = useState('');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [notes, setNotes] = useState('');
+  const [currency, setCurrency] = useState<CurrencyCode>(DEFAULT_CURRENCY);
+  const currencyLookupRef = useRef(0);
+
+  const matchedHolding = holdings.find(
+    (h) => h.ticker.toUpperCase() === ticker.toUpperCase()
+  );
+
+  useEffect(() => {
+    if (matchedHolding || !ticker.trim()) return;
+
+    const id = ++currencyLookupRef.current;
+    const timer = window.setTimeout(async () => {
+      const reported = await fetchTickerCurrency(ticker);
+      if (reported && id === currencyLookupRef.current) {
+        setCurrency(reported);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [ticker, matchedHolding]);
+
+  useEffect(() => {
+    if (defaultTicker && !matchedHolding) {
+      fetchTickerCurrency(defaultTicker).then((reported) => {
+        if (reported) setCurrency(reported);
+      });
+    }
+  }, [defaultTicker, matchedHolding]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    const holding = holdings.find(
-      (h) => h.ticker.toUpperCase() === ticker.toUpperCase()
-    );
+    const txCurrency = matchedHolding
+      ? normalizeCurrencyWithDefault(matchedHolding.currency)
+      : (await fetchTickerCurrency(ticker)) ?? currency;
     await addTransaction({
-      holdingId: holding?.id,
+      holdingId: matchedHolding?.id,
       ticker: ticker.toUpperCase().trim(),
       type,
       shares: parseFloat(shares) || 0,
       price: parseFloat(price) || 0,
+      currency: txCurrency,
       date: new Date(date),
       notes: notes.trim(),
     });
@@ -126,6 +162,18 @@ export function AddTransactionForm({
           />
         </div>
       </div>
+      {!matchedHolding && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+            Currency
+          </label>
+          <CurrencySelect
+            value={currency}
+            onChange={setCurrency}
+            className={inputClass}
+          />
+        </div>
+      )}
       <div>
         <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
           Notes

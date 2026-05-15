@@ -4,8 +4,15 @@ import { addHolding, updateHolding } from '../../db/hooks';
 import { lookupTicker } from '../../services/yahooFinance';
 import { isTauri } from '../../services/fileAdapter';
 import type { Holding } from '../../types';
+import {
+  DEFAULT_CURRENCY,
+  normalizeCurrencyWithDefault,
+  type CurrencyCode,
+} from '../../constants/currencies';
+import { fetchTickerCurrency } from '../../services/tickerCurrency';
 import { cn } from '../../utils/format';
 import { TickerSearchInput } from '../common/TickerSearchInput';
+import { CurrencySelect } from '../common/CurrencySelect';
 
 interface AddHoldingFormProps {
   holding?: Holding;
@@ -17,6 +24,11 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
   const [name, setName] = useState(holding?.name ?? '');
   const [shares, setShares] = useState(holding?.shares?.toString() ?? '');
   const [avgCost, setAvgCost] = useState(holding?.avgCost?.toString() ?? '');
+  const [currency, setCurrency] = useState<CurrencyCode>(
+    holding
+      ? normalizeCurrencyWithDefault(holding.currency)
+      : DEFAULT_CURRENCY
+  );
   const [sector, setSector] = useState(holding?.sector ?? '');
   const [country, setCountry] = useState(holding?.country ?? '');
   const [drip, setDrip] = useState(holding?.drip ?? false);
@@ -48,6 +60,7 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
         setName(info.name);
         setSector(info.sector);
         setCountry(info.country || '');
+        setCurrency(normalizeCurrencyWithDefault(info.currency));
         setLookupState('found');
       } else {
         setLookupState('notfound');
@@ -59,11 +72,14 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    const reported =
+      (await fetchTickerCurrency(ticker)) ?? currency;
     const data = {
       ticker: ticker.toUpperCase().trim(),
       name: name.trim(),
       shares: parseFloat(shares),
       avgCost: parseFloat(avgCost),
+      currency: reported,
       sector: sector || 'Other',
       country: (country || '').trim() || 'Other',
       drip,
@@ -93,9 +109,13 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
           <TickerSearchInput
             value={ticker}
             onChange={setTicker}
-            onSelect={(symbol, companyName) => {
+            onSelect={async (symbol, companyName) => {
               setTicker(symbol);
               setName(companyName);
+              if (!isEditing) {
+                const reported = await fetchTickerCurrency(symbol);
+                if (reported) setCurrency(reported);
+              }
             }}
             placeholder="Search by ticker or company name (e.g. AAPL or Apple)"
             required
@@ -153,7 +173,7 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
             Shares
@@ -179,6 +199,16 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
             onChange={(e) => setAvgCost(e.target.value)}
             placeholder="150.00"
             required
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+            Currency
+          </label>
+          <CurrencySelect
+            value={currency}
+            onChange={setCurrency}
             className={inputClass}
           />
         </div>
