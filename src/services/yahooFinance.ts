@@ -397,6 +397,40 @@ export interface DividendRateData {
   yieldPercent: number;
 }
 
+/** Yahoo field on summaryDetail (decimal, e.g. 0.04 = 4%). */
+type YahooRawField = { raw?: number; fmt?: string };
+
+/**
+ * Treasury / bond ETFs (e.g. USFR, SGOV) often expose income only via `yield`,
+ * not dividendRate/dividendYield. Derive annual $/share when price is known.
+ */
+function parseDividendMetrics(
+  sd: {
+    dividendRate?: YahooRawField;
+    trailingAnnualDividendRate?: YahooRawField;
+    dividendYield?: YahooRawField;
+    trailingAnnualDividendYield?: YahooRawField;
+    yield?: YahooRawField;
+  },
+  marketPrice = 0
+): { annualRate: number; yieldPercent: number } {
+  const distributionYield = sd.yield?.raw ?? 0;
+  let annualRate =
+    sd.dividendRate?.raw ?? sd.trailingAnnualDividendRate?.raw ?? 0;
+  let yieldDecimal =
+    sd.dividendYield?.raw ?? sd.trailingAnnualDividendYield?.raw ?? 0;
+
+  if (yieldDecimal <= 0 && distributionYield > 0) {
+    yieldDecimal = distributionYield;
+  }
+
+  if (annualRate <= 0 && yieldDecimal > 0 && marketPrice > 0) {
+    annualRate = yieldDecimal * marketPrice;
+  }
+
+  return { annualRate, yieldPercent: yieldDecimal * 100 };
+}
+
 const divRateCache = new Map<
   string,
   { data: DividendRateData; at: number }
@@ -410,21 +444,22 @@ export async function fetchDividendRate(
   if (cached && Date.now() - cached.at < CACHE_DURATION_MS) return cached.data;
 
   try {
-    const url = `${getBaseUrl()}/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=summaryDetail`;
+    const url = `${getBaseUrl()}/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=summaryDetail,price`;
     const res = await yahooFetch(url);
     if (!res.ok) return null;
 
     const data = await res.json();
-    const sd = data.quoteSummary?.result?.[0]?.summaryDetail;
+    const row = data.quoteSummary?.result?.[0];
+    const sd = row?.summaryDetail;
     if (!sd) return null;
+
+    const marketPrice = row?.price?.regularMarketPrice?.raw ?? 0;
+    const { annualRate, yieldPercent } = parseDividendMetrics(sd, marketPrice);
 
     const result: DividendRateData = {
       ticker: key,
-      annualRate:
-        sd.dividendRate?.raw ?? sd.trailingAnnualDividendRate?.raw ?? 0,
-      yieldPercent:
-        (sd.dividendYield?.raw ?? sd.trailingAnnualDividendYield?.raw ?? 0) *
-        100,
+      annualRate,
+      yieldPercent,
     };
 
     divRateCache.set(key, { data: result, at: Date.now() });
@@ -524,8 +559,10 @@ export async function fetchTickerSummary(
       fiftyTwoWeekLow: sd.fiftyTwoWeekLow?.raw ?? 0,
       fiftyTwoWeekHigh: sd.fiftyTwoWeekHigh?.raw ?? 0,
       targetMedian: fd.targetMedianPrice?.raw ?? 0,
-      dividendRate: sd.dividendRate?.raw ?? sd.trailingAnnualDividendRate?.raw ?? 0,
-      dividendYield: (sd.dividendYield?.raw ?? sd.trailingAnnualDividendYield?.raw ?? 0) * 100,
+      ...(() => {
+        const { annualRate, yieldPercent } = parseDividendMetrics(sd, mktPrice);
+        return { dividendRate: annualRate, dividendYield: yieldPercent };
+      })(),
       recommendation: (fd.recommendationKey as string) ?? '',
       extPrice,
       extChange,
@@ -725,6 +762,7 @@ export async function fetchTickerProfile(
     const prevClose = raw(p.regularMarketPreviousClose) || mktPrice;
     const chg = mktPrice - prevClose;
     const chgPct = prevClose ? (chg / prevClose) * 100 : 0;
+    const { annualRate, yieldPercent } = parseDividendMetrics(sd, mktPrice);
 
     return {
       ticker: key,
@@ -770,8 +808,14 @@ export async function fetchTickerProfile(
       currentRatio: fmt(fd.currentRatio),
       freeCashflow: fmt(fd.freeCashflow),
 
-      dividendRate: fmt(sd.dividendRate),
-      dividendYield: fmt(sd.dividendYield),
+      dividendRate:
+        annualRate > 0
+          ? annualRate.toFixed(2)
+          : fmt(sd.dividendRate),
+      dividendYield:
+        yieldPercent > 0
+          ? `${yieldPercent.toFixed(2)}%`
+          : fmt(sd.dividendYield),
       payoutRatio: fmt(sd.payoutRatio),
       exDividendDate: fmt(ce.exDividendDate),
       fiveYearAvgYield: sd.fiveYearAvgDividendYield
