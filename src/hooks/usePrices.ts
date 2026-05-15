@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { fetchPrices, clearAllCaches } from '../services/yahooFinance';
+import { clearExchangeRateCache } from '../services/exchangeRates';
 import type { PriceData } from '../types';
 
 export function usePrices(tickers: string[]) {
@@ -29,6 +30,7 @@ export function usePrices(tickers: string[]) {
   }, [tickerKey]);
 
   const forceRefresh = useCallback(async () => {
+    clearExchangeRateCache();
     await clearAllCaches();
     await refetch();
   }, [refetch]);

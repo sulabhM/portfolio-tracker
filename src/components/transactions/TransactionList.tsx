@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import type { Transaction } from '../../types';
 import { deleteTransaction } from '../../db/hooks';
-import { formatCurrency, formatDate, cn } from '../../utils/format';
+import { formatCurrency, formatMoney, formatDate, cn } from '../../utils/format';
 import { confirmBeforeDelete } from '../../utils/confirmBeforeDelete';
 
 interface TransactionListProps {
@@ -93,7 +93,7 @@ export function TransactionList({
                 </span>
               </div>
               <p className="text-xs text-gray-500 dark:text-slate-400">
-                {tx.shares} shares @ {formatCurrency(tx.price)} &middot;{' '}
+                {tx.shares} shares @ {formatMoney(tx.price, tx.currency)} &middot;{' '}
                 {formatDate(tx.date)}
               </p>
               {tx.notes && (
@@ -104,7 +104,7 @@ export function TransactionList({
             </div>
             <div className="text-right">
               <p className="font-medium tabular-nums text-gray-900 dark:text-white">
-                {formatCurrency(tx.shares * tx.price)}
+                {formatMoney(tx.shares * tx.price, tx.currency)}
               </p>
             </div>
             <button

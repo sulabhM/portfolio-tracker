@@ -2,6 +2,8 @@ import { useState, useMemo, useCallback, useEffect } from 'react';
 import { Plus, Briefcase } from 'lucide-react';
 import { useHoldings, useCashAccounts } from '../db/hooks';
 import { usePrices } from '../hooks/usePrices';
+import { useExchangeRates } from '../hooks/useExchangeRates';
+import { collectPortfolioCurrencies } from '../utils/portfolioCurrency';
 import { useRegisterRefresh } from '../contexts/RefreshTimerContext';
 import { fetchDividendRates } from '../services/yahooFinance';
 import type { DividendRateData } from '../services/yahooFinance';
@@ -20,6 +22,11 @@ export function Portfolio() {
   const cashAccounts = useCashAccounts();
   const tickers = useMemo(() => holdings.map((h) => h.ticker), [holdings]);
   const { prices, forceRefresh } = usePrices(tickers);
+  const currencies = useMemo(
+    () => collectPortfolioCurrencies(holdings, cashAccounts, prices),
+    [holdings, cashAccounts, prices]
+  );
+  const { rates } = useExchangeRates(currencies);
   const [dividendRates, setDividendRates] = useState<Map<string, DividendRateData>>(new Map());
   const [showAdd, setShowAdd] = useState(false);
   const [editingHolding, setEditingHolding] = useState<Holding | undefined>();
@@ -67,7 +74,7 @@ export function Portfolio() {
         </div>
       </div>
 
-      <CashAccountsCard accounts={cashAccounts} />
+      <CashAccountsCard accounts={cashAccounts} rates={rates} />
 
       {holdings.length === 0 ? (
         <EmptyState
@@ -88,6 +95,7 @@ export function Portfolio() {
         <HoldingsTable
           holdings={holdings}
           prices={prices}
+          rates={rates}
           dividendRates={dividendRates}
           onEdit={handleEdit}
         />

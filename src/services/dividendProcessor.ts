@@ -1,4 +1,5 @@
 import { db } from '../db/database';
+import { normalizeCurrencyWithDefault } from '../constants/currencies';
 import { fetchDividendEvents, fetchPrice } from './yahooFinance';
 
 const SYNC_COOLDOWN_KEY = 'lastDividendSync';
@@ -63,13 +64,21 @@ async function processHoldingDividends(holdingId: number): Promise<number> {
 
     if (holding.drip && netPayout > 0) {
       const priceData = await fetchPrice(holding.ticker);
+      const quoteCcy = normalizeCurrencyWithDefault(
+        priceData?.currency ?? holding.currency
+      );
+      const holdingCcy = normalizeCurrencyWithDefault(holding.currency);
       const currentPrice = priceData?.price ?? holding.avgCost;
-      if (currentPrice > 0) {
+      if (quoteCcy === holdingCcy && currentPrice > 0) {
         reinvestedShares = netPayout / currentPrice;
         await db.holdings.update(holdingId, {
           shares: holding.shares + reinvestedShares,
           updatedAt: new Date(),
         });
+      } else if (quoteCcy !== holdingCcy) {
+        console.warn(
+          `DRIP skipped for ${holding.ticker}: quote ${quoteCcy} vs holding ${holdingCcy}`
+        );
       }
     } else if (netPayout > 0) {
       const accounts = await db.cashAccounts.toArray();
@@ -98,6 +107,7 @@ async function processHoldingDividends(holdingId: number): Promise<number> {
       type: 'dividend',
       shares: reinvestedShares,
       price: event.amount,
+      currency: holding.currency,
       date: eventDate,
       notes: holding.drip
         ? `Auto-dividend: ${event.amount}/sh, reinvested ${reinvestedShares.toFixed(4)} shares (tax ${(holding.dividendTaxRate * 100).toFixed(0)}%)`
@@ -172,6 +182,7 @@ export async function accrueInterest(): Promise<number> {
         type: 'interest',
         shares: 0,
         price: interest,
+        currency: account.currency,
         date: now,
         notes: `Interest: ${(account.interestRate * 100).toFixed(2)}% APR, ${periodsToApply} ${account.compoundFrequency === 'daily' ? 'day(s)' : 'month(s)'}`,
       });

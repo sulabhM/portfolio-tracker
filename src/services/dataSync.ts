@@ -1,3 +1,4 @@
+import { DEFAULT_CURRENCY } from '../constants/currencies';
 import { db } from '../db/database';
 import type {
   Holding,
@@ -95,13 +96,18 @@ export async function importAllData(data: BackupData): Promise<void> {
     await db.holdings.bulkAdd(
       data.holdings.map((h) => ({
         ...h,
+        currency: h.currency ?? DEFAULT_CURRENCY,
         addedDate: toDate(h.addedDate),
         createdAt: toDate(h.createdAt),
         updatedAt: toDate(h.updatedAt),
       }))
     );
     await db.transactions.bulkAdd(
-      data.transactions.map((t) => ({ ...t, date: toDate(t.date) }))
+      data.transactions.map((t) => ({
+        ...t,
+        currency: t.currency ?? DEFAULT_CURRENCY,
+        date: toDate(t.date),
+      }))
     );
     await db.notes.bulkAdd(
       data.notes.map((n) => ({
@@ -113,6 +119,7 @@ export async function importAllData(data: BackupData): Promise<void> {
     await db.cashAccounts.bulkAdd(
       data.cashAccounts.map((c) => ({
         ...c,
+        currency: c.currency ?? DEFAULT_CURRENCY,
         lastInterestDate: toDate(c.lastInterestDate),
         createdAt: toDate(c.createdAt),
       }))
@@ -124,7 +131,11 @@ export async function importAllData(data: BackupData): Promise<void> {
       data.watchlist.map((w) => ({ ...w, addedAt: toDate(w.addedAt) }))
     );
     await db.intrinsicValues.bulkAdd(
-      data.intrinsicValues.map((iv) => ({ ...iv, date: toDate(iv.date) }))
+      data.intrinsicValues.map((iv) => ({
+        ...iv,
+        currency: iv.currency ?? DEFAULT_CURRENCY,
+        date: toDate(iv.date),
+      }))
     );
   });
 }

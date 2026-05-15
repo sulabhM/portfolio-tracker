@@ -6,18 +6,28 @@ import {
   updateCashAccount,
   deleteCashAccount,
 } from '../../db/hooks';
-import { formatCurrency } from '../../utils/format';
+import {
+  normalizeCurrencyWithDefault,
+  type CurrencyCode,
+} from '../../constants/currencies';
+import { formatCurrency, formatMoney } from '../../utils/format';
+import { toUsd } from '../../services/exchangeRates';
+import { CurrencySelect } from '../common/CurrencySelect';
 import { confirmBeforeDelete } from '../../utils/confirmBeforeDelete';
 import { Modal } from '../common/Modal';
 
 interface CashAccountsCardProps {
   accounts: CashAccount[];
+  rates?: Map<string, number>;
 }
 
-export function CashAccountsCard({ accounts }: CashAccountsCardProps) {
+export function CashAccountsCard({ accounts, rates }: CashAccountsCardProps) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<CashAccount | undefined>();
-  const totalCash = accounts.reduce((sum, a) => sum + a.balance, 0);
+  const totalCash = accounts.reduce(
+    (sum, a) => sum + toUsd(a.balance, a.currency, rates ?? new Map()),
+    0
+  );
 
   function handleEdit(account: CashAccount) {
     setEditing(account);
@@ -32,7 +42,7 @@ export function CashAccountsCard({ accounts }: CashAccountsCardProps) {
   async function handleDelete(account: CashAccount) {
     if (account.id == null) return;
     await confirmBeforeDelete(
-      `Delete cash account "${account.name}" (${formatCurrency(account.balance)})? This cannot be undone.`,
+      `Delete cash account "${account.name}" (${formatMoney(account.balance, account.currency)})? This cannot be undone.`,
       () => deleteCashAccount(account.id!)
     );
   }
@@ -81,7 +91,7 @@ export function CashAccountsCard({ accounts }: CashAccountsCardProps) {
               </div>
               <div className="flex items-center gap-3">
                 <span className="font-semibold tabular-nums text-gray-900 dark:text-white">
-                  {formatCurrency(account.balance)}
+                  {formatMoney(account.balance, account.currency)}
                 </span>
                 <div className="flex gap-0.5">
                   <button
@@ -132,12 +142,16 @@ function CashAccountForm({
   const [compoundFrequency, setCompoundFrequency] = useState(
     account?.compoundFrequency ?? 'none'
   );
+  const [currency, setCurrency] = useState<CurrencyCode>(
+    normalizeCurrencyWithDefault(account?.currency)
+  );
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const data = {
       name: name.trim(),
       balance: parseFloat(balance) || 0,
+      currency,
       interestRate: Math.max(0, parseFloat(interestRate) / 100 || 0),
       compoundFrequency: compoundFrequency as 'daily' | 'monthly' | 'none',
       lastInterestDate: account?.lastInterestDate ?? new Date(),
@@ -169,19 +183,31 @@ function CashAccountForm({
           className={inputClass}
         />
       </div>
-      <div>
-        <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
-          Balance
-        </label>
-        <input
-          type="number"
-          step="any"
-          value={balance}
-          onChange={(e) => setBalance(e.target.value)}
-          placeholder="10000"
-          required
-          className={inputClass}
-        />
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+            Balance
+          </label>
+          <input
+            type="number"
+            step="any"
+            value={balance}
+            onChange={(e) => setBalance(e.target.value)}
+            placeholder="10000"
+            required
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+            Currency
+          </label>
+          <CurrencySelect
+            value={currency}
+            onChange={setCurrency}
+            className={inputClass}
+          />
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-4">
         <div>
