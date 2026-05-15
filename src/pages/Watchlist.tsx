@@ -11,7 +11,6 @@ import {
   ArrowDown,
 } from 'lucide-react';
 import {
-  ResponsiveContainer,
   ComposedChart,
   Line,
   XAxis,
@@ -20,6 +19,7 @@ import {
   CartesianGrid,
   ReferenceLine,
 } from 'recharts';
+import { ChartSizeBox } from '../components/charts/ChartSizeBox';
 import {
   useWatchlist,
   useWatchlistTags,
@@ -96,6 +96,7 @@ import { RefreshButton } from '../components/common/RefreshButton';
 import { Modal } from '../components/common/Modal';
 import { TickerSearchInput } from '../components/common/TickerSearchInput';
 import { TickerDetailView } from '../components/research/TickerDetailView';
+import { TickerNewsPanel } from '../components/research/TickerNewsPanel';
 
 export function Watchlist() {
   const items = useWatchlist();
@@ -936,7 +937,7 @@ function TickerDetailModal({
   const [customTo, setCustomTo] = useState(() => new Date().toISOString().slice(0, 10));
   const [ivInput, setIvInput] = useState('');
   const [ivDateInput, setIvDateInput] = useState(() => new Date().toISOString().slice(0, 10));
-  const [activeTab, setActiveTab] = useState<'chart' | 'financials' | 'notes'>('chart');
+  const [activeTab, setActiveTab] = useState<'chart' | 'financials' | 'notes' | 'news'>('chart');
   const tickerNotes = useNotes(undefined, ticker);
 
   async function handleDeleteIntrinsicEntry(iv: IntrinsicValue) {
@@ -1091,6 +1092,17 @@ function TickerDetailModal({
                 {tickerNotes.length}
               </span>
             )}
+          </button>
+          <button
+            onClick={() => setActiveTab('news')}
+            className={cn(
+              'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
+              activeTab === 'news'
+                ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300'
+            )}
+          >
+            News
           </button>
         </div>
 
@@ -1251,8 +1263,9 @@ function TickerDetailModal({
                 Loading historical data…
               </div>
             ) : chartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={320}>
-                <ComposedChart data={chartData}>
+              <ChartSizeBox height={320} renderKey={ticker}>
+                {({ width, height }) => (
+                <ComposedChart width={width} height={height} data={chartData}>
                   <CartesianGrid
                     strokeDasharray="3 3"
                     stroke="#334155"
@@ -1356,7 +1369,8 @@ function TickerDetailModal({
                     />
                   )}
                 </ComposedChart>
-              </ResponsiveContainer>
+                )}
+              </ChartSizeBox>
             ) : (
               <div className="h-64 flex items-center justify-center text-sm text-gray-400">
                 No historical data available.
@@ -1417,6 +1431,8 @@ function TickerDetailModal({
         {activeTab === 'financials' && (
           <TickerDetailView ticker={ticker} />
         )}
+
+        {activeTab === 'news' && <TickerNewsPanel ticker={ticker} />}
 
         {activeTab === 'notes' && (
           <div className="space-y-4">
