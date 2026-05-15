@@ -26,5 +26,6 @@ tauri-plugin-log = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-http = { version = "2", features = ["unsafe-headers", "cookies"] }
+tauri-plugin-opener = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies", "json", "gzip"] }
 urlencoding = "2"

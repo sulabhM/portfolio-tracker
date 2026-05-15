@@ -141,6 +141,77 @@ export interface SearchQuote {
   typeDisp?: string;
 }
 
+export interface TickerNewsItem {
+  id: string;
+  title: string;
+  publisher: string;
+  url: string;
+  publishedAt: number;
+}
+
+function parseTickerNews(
+  data: unknown,
+  ticker: string,
+  limit: number,
+  filterByTicker: boolean
+): TickerNewsItem[] {
+  const key = ticker.toUpperCase();
+  const raw = (data as { news?: Array<Record<string, unknown>> })?.news ?? [];
+
+  const items: TickerNewsItem[] = [];
+  for (const row of raw) {
+    const title = typeof row.title === 'string' ? row.title.trim() : '';
+    const link = typeof row.link === 'string' ? row.link.trim() : '';
+    if (!title || !link) continue;
+
+    const related = Array.isArray(row.relatedTickers)
+      ? row.relatedTickers.map((t) => String(t).toUpperCase())
+      : [];
+    if (filterByTicker && related.length > 0 && !related.includes(key)) continue;
+
+    const publishedAt =
+      typeof row.providerPublishTime === 'number' ? row.providerPublishTime : 0;
+
+    items.push({
+      id: String(row.uuid ?? link),
+      title,
+      publisher: typeof row.publisher === 'string' ? row.publisher : 'Yahoo Finance',
+      url: link,
+      publishedAt,
+    });
+  }
+
+  items.sort((a, b) => b.publishedAt - a.publishedAt);
+  return items.slice(0, limit);
+}
+
+export async function fetchTickerNews(
+  ticker: string,
+  limit = 15
+): Promise<TickerNewsItem[]> {
+  const key = ticker.toUpperCase().trim();
+  if (!key) return [];
+
+  const newsCount = Math.min(Math.max(limit * 2, limit), 30);
+  const path = `/v1/finance/search?q=${encodeURIComponent(key)}&quotesCount=0&newsCount=${newsCount}`;
+
+  try {
+    const url =
+      isTauri() && !isUsingYahooProxy()
+        ? `${YAHOO_ORIGIN}${path}`
+        : `${getBaseUrl()}${path}`;
+    const res = await yahooFetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const filtered = parseTickerNews(data, key, limit, true);
+    if (filtered.length > 0) return filtered;
+    return parseTickerNews(data, key, limit, false);
+  } catch (err) {
+    console.warn(`Failed to fetch news for ${ticker}:`, err);
+    return [];
+  }
+}
+
 function parseSearchQuotes(data: { quotes?: unknown[] }): SearchQuote[] {
   const quotes: unknown[] = data.quotes ?? [];
   return quotes
@@ -599,55 +670,41 @@ export interface HistoricalPrice {
 
 export type ChartRange = '1d' | '3mo' | '6mo' | '1y' | '2y' | '5y' | '10y' | 'max';
 
+function parseHistoricalChartResponse(data: unknown): HistoricalPrice[] {
+  const result = (data as { chart?: { result?: Array<{
+    timestamp?: number[];
+    indicators?: { quote?: Array<{ close?: (number | null)[] }> };
+  }> } })?.chart?.result?.[0];
+  if (!result) return [];
+
+  const timestamps: number[] = result.timestamp ?? [];
+  const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
+  const prices: HistoricalPrice[] = [];
+  for (let i = 0; i < timestamps.length; i++) {
+    if (closes[i] != null) prices.push({ date: timestamps[i], close: closes[i]! });
+  }
+  return prices;
+}
+
 export async function fetchHistoricalPrices(
   ticker: string,
   range: ChartRange = '1y'
 ): Promise<HistoricalPrice[]> {
   const key = ticker.toUpperCase();
   const interval = range === '1d' ? '5m' : '1d';
+  const path = `/v8/finance/chart/${encodeURIComponent(key)}?interval=${interval}&range=${range}`;
 
-  // Chart endpoint is the only Yahoo API that returns historical time series (timestamp + OHLC). quoteSummary has no history.
-  if (isTauri()) {
-    try {
-      const f = await getFetch();
-      const url = `${CHART_ORIGIN}/v8/finance/chart/${encodeURIComponent(key)}?interval=${interval}&range=${range}`;
-      const res = await f(url, { headers: { 'User-Agent': YAHOO_UA } });
-      if (!res.ok) return [];
-      const data = await res.json();
-      const result = data?.chart?.result?.[0];
-      if (!result) return [];
-      const timestamps: number[] = result.timestamp ?? [];
-      const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
-      const prices: HistoricalPrice[] = [];
-      for (let i = 0; i < timestamps.length; i++) {
-        if (closes[i] != null) prices.push({ date: timestamps[i], close: closes[i]! });
-      }
-      return prices;
-    } catch {
-      return [];
-    }
-  }
-
+  // Chart endpoint is the only Yahoo API that returns historical time series (timestamp + OHLC).
+  // Route through query2 + yahooFetch (Vite proxy / Rust auth / optional proxy) like quoteSummary.
   try {
-    const url = `${getBaseUrl()}/v8/finance/chart/${encodeURIComponent(key)}?interval=${interval}&range=${range}`;
+    const url =
+      isTauri() && !isUsingYahooProxy()
+        ? `${YAHOO_ORIGIN}${path}`
+        : `${getBaseUrl()}${path}`;
     const res = await yahooFetch(url);
     if (!res.ok) return [];
-
     const data = await res.json();
-    const result = data.chart?.result?.[0];
-    if (!result) return [];
-
-    const timestamps: number[] = result.timestamp ?? [];
-    const closes: (number | null)[] =
-      result.indicators?.quote?.[0]?.close ?? [];
-
-    const prices: HistoricalPrice[] = [];
-    for (let i = 0; i < timestamps.length; i++) {
-      if (closes[i] != null) {
-        prices.push({ date: timestamps[i], close: closes[i]! });
-      }
-    }
-    return prices;
+    return parseHistoricalChartResponse(data);
   } catch (err) {
     console.warn(`Failed to fetch historical prices for ${ticker}:`, err);
     return [];
