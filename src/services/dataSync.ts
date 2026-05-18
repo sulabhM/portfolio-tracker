@@ -1,4 +1,8 @@
 import { DEFAULT_CURRENCY } from '../constants/currencies';
+import {
+  PORTFOLIO_AUTO_TAG,
+  splitLegacyTags,
+} from '../constants/autoTags';
 import { db } from '../db/database';
 import type {
   Holding,
@@ -43,7 +47,14 @@ export interface TickerIntrinsicValue {
 export interface TickerEntry {
   ticker: string;
   name: string;
+  /** User-specified tags. */
   tags: string[];
+  /**
+   * Auto-generated tags derived from data sources (Yahoo recommendation,
+   * dividend status, portfolio membership). Refreshed on every data refresh
+   * and on portfolio changes; never edited by the user directly.
+   */
+  autoTags: string[];
   /** ISO date string for when the ticker was first added to the watchlist. */
   addedAt: string;
   /** Present iff the ticker is in the portfolio. */
@@ -118,9 +129,15 @@ function buildTickerEntries(
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
     const name = w?.name ?? h?.name ?? ticker;
-    // Drop the internal 'portfolio' marker tag; portfolio membership is signalled
-    // by the presence of the `portfolio` sub-object on the entry.
-    const tags = (w?.tags ?? []).filter((t) => t !== 'portfolio');
+    const tags = w?.tags ?? [];
+    const autoTagsRaw = (w?.autoTags ?? []).slice();
+    // Keep the portfolio auto-tag synchronized with actual portfolio membership
+    // so the exported file is internally consistent regardless of any stale
+    // IndexedDB state from before the last syncPortfolioToWatchlist.
+    const autoTagSet = new Set(autoTagsRaw);
+    if (h) autoTagSet.add(PORTFOLIO_AUTO_TAG);
+    else autoTagSet.delete(PORTFOLIO_AUTO_TAG);
+    const autoTags = Array.from(autoTagSet);
     const addedAt = toIso(
       w?.addedAt ?? h?.addedDate ?? h?.createdAt ?? new Date()
     );
@@ -129,6 +146,7 @@ function buildTickerEntries(
       ticker,
       name,
       tags,
+      autoTags,
       addedAt,
       intrinsicValues: ivs.map((iv) => ({
         value: iv.value,
@@ -201,10 +219,15 @@ function migrateV1(data: BackupDataV1): BackupData {
     createdAt: toDate(h.createdAt),
     updatedAt: toDate(h.updatedAt),
   }));
-  const watchlist: WatchlistItem[] = data.watchlist.map((w) => ({
-    ...w,
-    addedAt: toDate(w.addedAt),
-  }));
+  const watchlist: WatchlistItem[] = data.watchlist.map((w) => {
+    const split = splitLegacyTags(w.tags ?? []);
+    return {
+      ...w,
+      tags: split.tags,
+      autoTags: split.autoTags,
+      addedAt: toDate(w.addedAt),
+    };
+  });
   const intrinsicValues: IntrinsicValue[] = data.intrinsicValues.map((iv) => ({
     ...iv,
     date: toDate(iv.date),
@@ -260,16 +283,17 @@ export async function importAllData(data: BackupData | BackupDataV1): Promise<vo
       for (const entry of normalized.tickers) {
         const ticker = entry.ticker.toUpperCase();
         const addedAt = toDate(entry.addedAt);
-        // Internal IndexedDB still uses a 'portfolio' tag to flag portfolio
-        // membership in the UI; the flattened JSON signals it via the
-        // presence of the `portfolio` sub-object on the entry.
-        const tags = entry.tags.filter((t) => t !== 'portfolio');
-        if (entry.portfolio) tags.push('portfolio');
+        // The `portfolio` sub-object is the source of truth for portfolio
+        // membership; keep the autoTags list consistent with it on import.
+        const autoTagSet = new Set(entry.autoTags ?? []);
+        if (entry.portfolio) autoTagSet.add(PORTFOLIO_AUTO_TAG);
+        else autoTagSet.delete(PORTFOLIO_AUTO_TAG);
 
         watchlist.push({
           ticker,
           name: entry.name,
-          tags,
+          tags: entry.tags.slice(),
+          autoTags: Array.from(autoTagSet),
           addedAt,
         });
 
