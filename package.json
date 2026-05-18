@@ -4,7 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "overrides": {
-    "serialize-javascript": ">=7.0.3"
+    "serialize-javascript": ">=7.0.3",
+    "@tauri-apps/api": "2.11.0"
   },
   "scripts": {
     "dev": "vite",
@@ -18,7 +19,7 @@
     "tauri:android:build": "tauri android build"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/api": "2.11.0",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-fs": "^2.4.5",
     "@tauri-apps/plugin-http": "^2.5.7",
@@ -41,7 +42,7 @@
     "@eslint/js": "^9.39.1",
     "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.2.1",
-    "@tauri-apps/cli": "^2.10.1",
+    "@tauri-apps/cli": "2.11.0",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
