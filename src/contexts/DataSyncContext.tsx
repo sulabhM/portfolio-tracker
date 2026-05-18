@@ -1,6 +1,4 @@
 import {
-  createContext,
-  useContext,
   useState,
   useCallback,
   useEffect,
@@ -14,9 +12,7 @@ import {
   readSyncFile,
   writeSyncFile,
   pickSyncFile,
-  pickOpenSyncFile,
   type SyncFileTarget,
-  type PickedSyncFile,
 } from '../services/fileAdapter';
 import {
   getStoredSyncPath,
@@ -25,50 +21,27 @@ import {
   setStoredSyncHandle,
 } from '../services/syncFileStore';
 import { setDataSyncCallback } from '../services/dataSyncRegistry';
+import {
+  DataSyncContext,
+  type ConflictChoice,
+  type SyncStatus,
+} from './dataSyncContextValue';
 
 const SYNC_DEBOUNCE_MS = 800;
 
-export type SyncStatus = 'idle' | 'syncing' | 'error';
-
-export type ConflictChoice = 'file' | 'local';
-
-interface DataSyncContextValue {
-  syncFilePath: string | null;
-  syncStatus: SyncStatus;
-  lastSyncAt: number | null;
-  syncError: string | null;
-  conflictPending: boolean;
-  resolveConflict: (choice: ConflictChoice) => Promise<void>;
-  dismissConflict: () => void;
-  setSyncFile: () => Promise<void>;
-  clearSyncFile: () => Promise<void>;
-  requestSync: () => Promise<void>;
-  hasSyncFile: boolean;
-}
-
-const DataSyncContext = createContext<DataSyncContextValue>({
-  syncFilePath: null,
-  syncStatus: 'idle',
-  lastSyncAt: null,
-  syncError: null,
-  conflictPending: false,
-  resolveConflict: async () => {},
-  dismissConflict: () => {},
-  setSyncFile: async () => {},
-  clearSyncFile: async () => {},
-  requestSync: async () => {},
-  hasSyncFile: false,
-});
-
 export function DataSyncProvider({ children }: { children: ReactNode }) {
-  const [syncFilePath, setSyncFilePathState] = useState<string | null>(null);
+  const [syncFilePath, setSyncFilePathState] = useState<string | null>(
+    () => getStoredSyncPath()
+  );
   const [, setSyncHandleState] = useState<FileSystemFileHandle | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [conflictPending, setConflictPending] = useState(false);
   const debounceRef = useRef<number>(0);
-  const targetRef = useRef<SyncFileTarget | null>(null);
+  const targetRef = useRef<SyncFileTarget | null>(
+    isTauri() ? getStoredSyncPath() : null
+  );
   const conflictCheckedRef = useRef(false);
 
   const performSync = useCallback(async () => {
@@ -106,24 +79,19 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
     };
   }, [performSync]);
 
-  const loadStored = useCallback(async () => {
-    const path = getStoredSyncPath();
-    if (path) setSyncFilePathState(path);
-    if (isTauri()) {
-      targetRef.current = path;
-    } else {
-      const handle = await getStoredSyncHandle();
-      if (handle) {
-        setSyncHandleState(handle);
-        setSyncFilePathState(handle.name);
-        targetRef.current = handle;
-      }
-    }
-  }, []);
-
   useEffect(() => {
-    loadStored();
-  }, [loadStored]);
+    if (isTauri()) return;
+    let cancelled = false;
+    getStoredSyncHandle().then((handle) => {
+      if (!handle || cancelled) return;
+      setSyncHandleState(handle);
+      setSyncFilePathState(handle.name);
+      targetRef.current = handle;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const dismissConflict = useCallback(() => setConflictPending(false), []);
 
@@ -163,9 +131,9 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
     conflictCheckedRef.current = true;
     const check = async () => {
       try {
-        const [fileData, holdingsCount] = await Promise.all([
+        const [fileData, tickersCount] = await Promise.all([
           readSyncFile(target),
-          db.holdings.count(),
+          db.tickers.count(),
         ]);
         const fileHasData =
           fileData &&
@@ -174,7 +142,7 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
             // Backward-compat: detect data in a v1 backup file.
             ((fileData as unknown as { holdings?: unknown[] }).holdings?.length ?? 0) > 0 ||
             ((fileData as unknown as { watchlist?: unknown[] }).watchlist?.length ?? 0) > 0);
-        const localHasData = holdingsCount > 0 || (await db.watchlist.count()) > 0;
+        const localHasData = tickersCount > 0;
         if (fileHasData && localHasData) setConflictPending(true);
       } catch {
         // ignore
@@ -234,9 +202,3 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
     </DataSyncContext.Provider>
   );
 }
-
-export function useDataSync() {
-  return useContext(DataSyncContext);
-}
-
-export { readSyncFile, pickOpenSyncFile, type PickedSyncFile, type SyncFileTarget };

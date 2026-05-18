@@ -46,15 +46,14 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
 
   useEffect(() => {
     if (isEditing) return;
-    const raw = ticker.trim().toUpperCase();
-    if (raw.length < 1) {
-      setLookupState('idle');
-      return;
-    }
-
-    setLookupState('loading');
     clearTimeout(lookupTimeout.current);
+    const raw = ticker.trim().toUpperCase();
     lookupTimeout.current = window.setTimeout(async () => {
+      if (raw.length < 1) {
+        setLookupState('idle');
+        return;
+      }
+      setLookupState('loading');
       const info = await lookupTicker(raw);
       if (info) {
         setName(info.name);

@@ -23,12 +23,24 @@ export function TickerDetailView({ ticker }: { ticker: string }) {
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
-    setLoading(true);
-    setProfile(null);
-    setExpanded(false);
-    fetchTickerProfile(ticker)
-      .then(setProfile)
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    Promise.resolve()
+      .then(() => {
+        if (cancelled) return;
+        setLoading(true);
+        setProfile(null);
+        setExpanded(false);
+      })
+      .then(() => fetchTickerProfile(ticker))
+      .then((nextProfile) => {
+        if (!cancelled) setProfile(nextProfile);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [ticker]);
 
   if (loading) {

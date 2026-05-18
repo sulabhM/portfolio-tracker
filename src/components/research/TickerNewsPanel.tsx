@@ -28,9 +28,13 @@ export function TickerNewsPanel({ ticker }: { ticker: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setItems([]);
-    fetchTickerNews(ticker)
+    Promise.resolve()
+      .then(() => {
+        if (cancelled) return;
+        setLoading(true);
+        setItems([]);
+      })
+      .then(() => fetchTickerNews(ticker))
       .then((news) => {
         if (!cancelled) setItems(news);
       })

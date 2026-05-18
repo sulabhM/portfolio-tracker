@@ -127,7 +127,7 @@ export function HoldingsTable({
     }
   }
 
-  async function handleDelete(id: number, ticker: string) {
+  async function handleDelete(id: string, ticker: string) {
     await confirmBeforeDelete(
       `Remove ${ticker} from your portfolio? This cannot be undone.`,
       () => deleteHolding(id)

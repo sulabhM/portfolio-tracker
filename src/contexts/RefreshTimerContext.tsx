@@ -117,6 +117,8 @@ export function RefreshTimerProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// This module intentionally colocates the provider and hooks for the refresh context.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useRefreshTimer() {
   return useContext(RefreshTimerContext);
 }
@@ -126,10 +128,14 @@ export function useRefreshTimer() {
  * Callbacks are keyed by `id` so each page/component gets one slot.
  * The latest `fn` is always used (via ref) so deps don't matter.
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function useRegisterRefresh(id: string, fn: () => Promise<void>) {
   const { registerRefresh, unregisterRefresh } = useRefreshTimer();
   const fnRef = useRef(fn);
-  fnRef.current = fn;
+
+  useEffect(() => {
+    fnRef.current = fn;
+  }, [fn]);
 
   useEffect(() => {
     registerRefresh(id, () => fnRef.current());

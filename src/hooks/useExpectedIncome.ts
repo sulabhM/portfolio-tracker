@@ -22,20 +22,22 @@ export function useExpectedIncome(
   const [loading, setLoading] = useState(false);
   const tickerKey = holdings.map((h) => h.ticker).join(',');
 
-  const refetch = useCallback(() => {
+  const refetch = useCallback(async () => {
     const tickers = tickerKey ? tickerKey.split(',') : [];
     if (tickers.length === 0) {
       setDivRates(new Map());
       return;
     }
     setLoading(true);
-    fetchDividendRates(tickers)
-      .then(setDivRates)
-      .finally(() => setLoading(false));
+    try {
+      setDivRates(await fetchDividendRates(tickers));
+    } finally {
+      setLoading(false);
+    }
   }, [tickerKey]);
 
   useEffect(() => {
-    refetch();
+    void Promise.resolve().then(refetch);
   }, [refetch]);
 
   return useMemo(() => {
