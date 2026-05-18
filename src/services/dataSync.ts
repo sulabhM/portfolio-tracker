@@ -77,6 +77,35 @@ function toIso(val: string | Date): string {
   return (val instanceof Date ? val : new Date(val)).toISOString();
 }
 
+function assertCurrentBackupData(data: BackupData): void {
+  if (data.version !== BACKUP_VERSION) {
+    throw new Error(
+      `Unsupported backup version: ${data.version}. Expected ${BACKUP_VERSION}.`
+    );
+  }
+  if (!Array.isArray(data.tickers)) {
+    throw new Error('Invalid backup file: expected a tickers array.');
+  }
+  for (const entry of data.tickers) {
+    if (!entry || typeof entry.ticker !== 'string') {
+      throw new Error('Invalid backup file: every ticker entry needs a ticker.');
+    }
+    if (!Array.isArray(entry.userTags)) {
+      throw new Error(
+        `Invalid backup file: ${entry.ticker} is missing userTags.`
+      );
+    }
+    if (!Array.isArray(entry.autoTags)) {
+      throw new Error(`Invalid backup file: ${entry.ticker} is missing autoTags.`);
+    }
+    if (!Array.isArray(entry.intrinsicValues)) {
+      throw new Error(
+        `Invalid backup file: ${entry.ticker} is missing intrinsicValues.`
+      );
+    }
+  }
+}
+
 function serializeTickerEntry(entry: DbTickerEntry): TickerEntry {
   const autoTagSet = new Set(entry.autoTags ?? []);
   if (entry.portfolio) autoTagSet.add(PORTFOLIO_AUTO_TAG);
@@ -178,11 +207,7 @@ export async function exportAllData(): Promise<BackupData> {
 }
 
 export async function importAllData(data: BackupData): Promise<void> {
-  if (data.version !== BACKUP_VERSION) {
-    throw new Error(
-      `Unsupported backup version: ${data.version}. Expected ${BACKUP_VERSION}.`
-    );
-  }
+  assertCurrentBackupData(data);
 
   await db.transaction(
     'rw',
