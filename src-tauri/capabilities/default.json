@@ -25,6 +25,7 @@
     "fs:allow-read-text-file",
     "fs:allow-write-text-file",
     "fs:allow-rename",
+    "core:window:allow-destroy",
     "opener:default",
     {
       "identifier": "fs:scope",

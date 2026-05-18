@@ -173,12 +173,17 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
 
   /**
    * Tauri close-requested handler. Unlike the browser unload events we can
-   * actually block the close until the file write completes: prevent the
-   * default close, await `ensureFlushed`, then re-invoke `window.close()`
-   * with the `bypassingFlushRef` flag set so the handler short-circuits and
-   * lets the second close go through.
+   * actually block the close until the file write completes.
+   *
+   * When nothing is owed to the file, we return without calling
+   * `preventDefault()` and the `@tauri-apps/api/window` wrapper itself calls
+   * `this.destroy()` to close the window (requires `core:window:allow-destroy`
+   * in the capabilities config — without it, the close button silently does
+   * nothing because the wrapper's destroy fails on missing permission).
+   *
+   * When something is pending or in flight, we prevent the default, await
+   * `ensureFlushed`, then call `w.destroy()` ourselves to actually close.
    */
-  const bypassingFlushRef = useRef(false);
   useEffect(() => {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
@@ -188,19 +193,17 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         const w = getCurrentWindow();
         const dispose = await w.onCloseRequested(async (event) => {
-          if (bypassingFlushRef.current) return;
           if (!pendingSyncRef.current && !inFlightSyncRef.current) return;
           event.preventDefault();
           try {
             await ensureFlushed();
-          } finally {
-            bypassingFlushRef.current = true;
-            try {
-              await w.close();
-            } catch {
-              // last resort — if close fails we don't trap the user
-              bypassingFlushRef.current = false;
-            }
+          } catch {
+            // surfaced via syncError already; do not trap the user
+          }
+          try {
+            await w.destroy();
+          } catch {
+            // last resort — if destroy fails the user can hit X again
           }
         });
         if (cancelled) dispose();
