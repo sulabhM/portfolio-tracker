@@ -107,8 +107,15 @@ export async function writeSyncFile(target: SyncFileTarget, data: BackupData): P
   if (typeof target === 'string') {
     if (isTauri()) {
       try {
-        const { writeTextFile } = await import('@tauri-apps/plugin-fs');
-        await writeTextFile(target, json);
+        // Tauri's writeTextFile is truncate-then-write under the hood — if the
+        // process is killed mid-write the file is left truncated/corrupt. To
+        // keep the previous good content on a hard kill, write to a sibling
+        // `.tmp` file and then atomically rename it over the target. Same
+        // filesystem guarantees rename is atomic on POSIX and on NTFS.
+        const { writeTextFile, rename } = await import('@tauri-apps/plugin-fs');
+        const tmpPath = `${target}.tmp`;
+        await writeTextFile(tmpPath, json);
+        await rename(tmpPath, target);
       } catch (e) {
         throw new Error('Failed to write sync file: ' + (e instanceof Error ? e.message : String(e)));
       }
@@ -116,6 +123,10 @@ export async function writeSyncFile(target: SyncFileTarget, data: BackupData): P
       throw new Error('File path only supported in Tauri');
     }
   } else {
+    // The File System Access API buffers writes and only commits them when
+    // close() resolves, so an interrupted PWA write is naturally atomic — the
+    // file either reflects the new content or the previous content, never a
+    // half-written mix.
     const writable = await (target as FileSystemFileHandle).createWritable();
     await writable.write(json);
     await writable.close();
