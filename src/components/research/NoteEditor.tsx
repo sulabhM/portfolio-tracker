@@ -17,7 +17,7 @@ import {
   Highlighter,
   Minus,
 } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useHoldings, updateNote, deleteNote } from '../../db/hooks';
 import type { Note } from '../../types';
 import { cn } from '../../utils/format';
@@ -40,12 +40,12 @@ export function NoteEditor({ note, onBack }: NoteEditorProps) {
   const holdings = useHoldings();
   const saveTimeout = useRef<number>(0);
 
-  function scheduleSave(partial: Partial<Note>) {
+  const scheduleSave = useCallback((partial: Partial<Note>) => {
     clearTimeout(saveTimeout.current);
     saveTimeout.current = window.setTimeout(async () => {
       if (note.id) await updateNote(note.id, partial);
     }, 600);
-  }
+  }, [note.id]);
 
   const editor = useEditor({
     extensions: [
@@ -64,15 +64,15 @@ export function NoteEditor({ note, onBack }: NoteEditorProps) {
 
   useEffect(() => {
     scheduleSave({ title });
-  }, [title]);
+  }, [scheduleSave, title]);
 
   useEffect(() => {
     scheduleSave({ tags });
-  }, [tags]);
+  }, [scheduleSave, tags]);
 
   useEffect(() => {
     scheduleSave({ tickerLinks });
-  }, [tickerLinks]);
+  }, [scheduleSave, tickerLinks]);
 
   useEffect(() => {
     return () => clearTimeout(saveTimeout.current);

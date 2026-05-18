@@ -18,15 +18,14 @@ function markSynced() {
 export async function processDividends(): Promise<number> {
   if (!shouldSync()) return 0;
 
-  const holdings = await db.holdings.toArray();
+  const holdings = (await db.tickers.toArray()).filter((t) => t.portfolio);
   let processed = 0;
 
-  for (const holding of holdings) {
-    if (!holding.id) continue;
+  for (const entry of holdings) {
     try {
-      processed += await processHoldingDividends(holding.id);
+      processed += await processHoldingDividends(entry.ticker);
     } catch (err) {
-      console.warn(`Dividend processing failed for ${holding.ticker}:`, err);
+      console.warn(`Dividend processing failed for ${entry.ticker}:`, err);
     }
   }
 
@@ -34,9 +33,15 @@ export async function processDividends(): Promise<number> {
   return processed;
 }
 
-async function processHoldingDividends(holdingId: number): Promise<number> {
-  const holding = await db.holdings.get(holdingId);
-  if (!holding) return 0;
+async function processHoldingDividends(ticker: string): Promise<number> {
+  const entry = await db.tickers.get(ticker.toUpperCase());
+  if (!entry?.portfolio) return 0;
+  const holding = {
+    id: entry.ticker,
+    ticker: entry.ticker,
+    name: entry.name,
+    ...entry.portfolio,
+  };
 
   const sinceDate = new Date(holding.addedDate ?? holding.createdAt);
   const events = await fetchDividendEvents(holding.ticker, sinceDate);
@@ -71,9 +76,12 @@ async function processHoldingDividends(holdingId: number): Promise<number> {
       const currentPrice = priceData?.price ?? holding.avgCost;
       if (quoteCcy === holdingCcy && currentPrice > 0) {
         reinvestedShares = netPayout / currentPrice;
-        await db.holdings.update(holdingId, {
-          shares: holding.shares + reinvestedShares,
-          updatedAt: new Date(),
+        await db.tickers.update(holding.id, {
+          portfolio: {
+            ...entry.portfolio,
+            shares: holding.shares + reinvestedShares,
+            updatedAt: new Date(),
+          },
         });
       } else if (quoteCcy !== holdingCcy) {
         console.warn(
@@ -90,7 +98,7 @@ async function processHoldingDividends(holdingId: number): Promise<number> {
     }
 
     await db.dividendRecords.add({
-      holdingId,
+      holdingId: holding.id,
       ticker: holding.ticker.toUpperCase(),
       exDate: event.date,
       amount: event.amount,
@@ -102,7 +110,7 @@ async function processHoldingDividends(holdingId: number): Promise<number> {
 
     const eventDate = new Date(event.date * 1000);
     await db.transactions.add({
-      holdingId,
+      holdingId: holding.id,
       ticker: holding.ticker.toUpperCase(),
       type: 'dividend',
       shares: reinvestedShares,

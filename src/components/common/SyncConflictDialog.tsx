@@ -1,4 +1,4 @@
-import { useDataSync } from '../../contexts/DataSyncContext';
+import { useDataSync } from '../../contexts/dataSyncContextValue';
 import { Modal } from './Modal';
 
 export function SyncConflictDialog() {

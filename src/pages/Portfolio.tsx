@@ -21,6 +21,7 @@ export function Portfolio() {
   const holdings = useHoldings();
   const cashAccounts = useCashAccounts();
   const tickers = useMemo(() => holdings.map((h) => h.ticker), [holdings]);
+  const tickerKey = tickers.join(',');
   const { prices, forceRefresh } = usePrices(tickers);
   const currencies = useMemo(
     () => collectPortfolioCurrencies(holdings, cashAccounts, prices),
@@ -32,12 +33,19 @@ export function Portfolio() {
   const [editingHolding, setEditingHolding] = useState<Holding | undefined>();
 
   useEffect(() => {
-    if (tickers.length === 0) {
-      setDividendRates(new Map());
-      return;
-    }
-    fetchDividendRates(tickers).then(setDividendRates);
-  }, [tickers.join(',')]);
+    let cancelled = false;
+    Promise.resolve()
+      .then(() => {
+        if (tickers.length === 0) return new Map<string, DividendRateData>();
+        return fetchDividendRates(tickers);
+      })
+      .then((rates) => {
+        if (!cancelled) setDividendRates(rates);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tickerKey, tickers]);
 
   const stableRefresh = useCallback(() => forceRefresh(), [forceRefresh]);
   useRegisterRefresh('portfolio-prices', stableRefresh);

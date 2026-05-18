@@ -422,7 +422,7 @@ function WatchlistRow({
   onRowClick,
 }: {
   item: {
-    id?: number;
+    id?: string;
     ticker: string;
     name: string;
     tags: string[];
@@ -1513,20 +1513,20 @@ function AddTickerForm({
 
   const existingTickersKey = existingTickers.join(',');
   useEffect(() => {
-    const key = ticker.trim().toUpperCase();
-    if (key.length < 1) {
-      setLookupState('idle');
-      return;
-    }
-    const existing = existingTickers.includes(key);
-    if (existing) {
-      setLookupState('notfound');
-      setName('Already in watchlist');
-      return;
-    }
-    setLookupState('loading');
     clearTimeout(lookupTimeoutRef.current);
+    const key = ticker.trim().toUpperCase();
     lookupTimeoutRef.current = window.setTimeout(async () => {
+      if (key.length < 1) {
+        setLookupState('idle');
+        return;
+      }
+      const existing = existingTickersKey.split(',').includes(key);
+      if (existing) {
+        setLookupState('notfound');
+        setName('Already in watchlist');
+        return;
+      }
+      setLookupState('loading');
       const info = await lookupTicker(key);
       if (info) {
         setName(info.name);

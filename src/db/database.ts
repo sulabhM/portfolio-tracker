@@ -1,25 +1,21 @@
 import Dexie, { type Table } from 'dexie';
 import { splitLegacyTags } from '../constants/autoTags';
 import type {
-  Holding,
   Transaction,
   Note,
   PriceData,
   CashAccount,
   DividendRecord,
-  WatchlistItem,
-  IntrinsicValue,
+  TickerEntry,
 } from '../types';
 
 export class PortfolioDatabase extends Dexie {
-  holdings!: Table<Holding, number>;
+  tickers!: Table<TickerEntry, string>;
   transactions!: Table<Transaction, number>;
   notes!: Table<Note, number>;
   priceCache!: Table<PriceData, string>;
   cashAccounts!: Table<CashAccount, number>;
   dividendRecords!: Table<DividendRecord, number>;
-  watchlist!: Table<WatchlistItem, number>;
-  intrinsicValues!: Table<IntrinsicValue, number>;
 
   constructor() {
     super('PortfolioTracker');
@@ -161,6 +157,110 @@ export class PortfolioDatabase extends Dexie {
             w.autoTags = autoTags;
           });
       });
+
+    // v8: add the flattened ticker table and migrate holdings/watchlist/
+    // intrinsicValues into one row per ticker.
+    this.version(8)
+      .stores({
+        holdings: '++id, ticker, sector',
+        transactions: '++id, holdingId, ticker, type, date',
+        notes: '++id, *tags, *tickerLinks',
+        priceCache: 'ticker',
+        cashAccounts: '++id, name',
+        dividendRecords: '++id, holdingId, ticker, [ticker+exDate]',
+        watchlist: '++id, ticker, *tags, *autoTags',
+        intrinsicValues: '++id, ticker, date',
+        tickers: 'ticker, *userTags, *autoTags',
+      })
+      .upgrade(async (tx) => {
+        const [holdings, watchlist, intrinsicValues] = await Promise.all([
+          tx.table('holdings').toArray(),
+          tx.table('watchlist').toArray(),
+          tx.table('intrinsicValues').toArray(),
+        ]);
+
+        const entries = new Map<string, TickerEntry>();
+        const ensureEntry = (ticker: string): TickerEntry => {
+          const key = ticker.toUpperCase();
+          let entry = entries.get(key);
+          if (!entry) {
+            entry = {
+              ticker: key,
+              name: key,
+              userTags: [],
+              autoTags: [],
+              addedAt: new Date(),
+              intrinsicValues: [],
+            };
+            entries.set(key, entry);
+          }
+          return entry;
+        };
+
+        for (const w of watchlist) {
+          const entry = ensureEntry(w.ticker);
+          entry.name = w.name ?? entry.name;
+          const split = Array.isArray(w.autoTags)
+            ? { tags: w.tags ?? [], autoTags: w.autoTags ?? [] }
+            : splitLegacyTags(w.tags ?? []);
+          entry.userTags = split.tags;
+          entry.autoTags = split.autoTags;
+          entry.addedAt = w.addedAt ?? entry.addedAt;
+        }
+
+        for (const h of holdings) {
+          const entry = ensureEntry(h.ticker);
+          entry.name = h.name ?? entry.name;
+          entry.addedAt = entry.addedAt ?? h.addedDate ?? h.createdAt ?? new Date();
+          if (!entry.autoTags.includes('portfolio')) {
+            entry.autoTags.push('portfolio');
+          }
+          entry.portfolio = {
+            shares: h.shares,
+            avgCost: h.avgCost,
+            currency: h.currency ?? 'USD',
+            sector: h.sector,
+            country: h.country ?? '',
+            drip: h.drip ?? false,
+            dividendTaxRate: h.dividendTaxRate ?? 0,
+            addedDate: h.addedDate ?? h.createdAt ?? new Date(),
+            createdAt: h.createdAt ?? new Date(),
+            updatedAt: h.updatedAt ?? new Date(),
+          };
+        }
+
+        for (const iv of intrinsicValues) {
+          const entry = ensureEntry(iv.ticker);
+          entry.intrinsicValues.push({
+            value: iv.value,
+            currency: iv.currency ?? 'USD',
+            date: iv.date ?? new Date(),
+          });
+        }
+
+        for (const entry of entries.values()) {
+          entry.intrinsicValues.sort(
+            (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+          );
+        }
+
+        await tx.table('tickers').bulkPut(Array.from(entries.values()));
+      });
+
+    // v9: the flattened ticker table is the source of truth. Remove the old
+    // holdings/watchlist/intrinsicValues tables so IndexedDB matches the backup
+    // ticker-entry shape.
+    this.version(9).stores({
+      holdings: null,
+      transactions: '++id, holdingId, ticker, type, date',
+      notes: '++id, *tags, *tickerLinks',
+      priceCache: 'ticker',
+      cashAccounts: '++id, name',
+      dividendRecords: '++id, holdingId, ticker, [ticker+exDate]',
+      watchlist: null,
+      intrinsicValues: null,
+      tickers: 'ticker, *userTags, *autoTags',
+    });
   }
 }
 

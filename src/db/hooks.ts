@@ -4,10 +4,50 @@ import { notifyDataChanged } from '../services/dataSyncRegistry';
 import { DEFAULT_CURRENCY, normalizeCurrencyWithDefault } from '../constants/currencies';
 import { PORTFOLIO_AUTO_TAG } from '../constants/autoTags';
 import { fetchTickerCurrency } from '../services/tickerCurrency';
-import type { Holding, Transaction, Note, CashAccount, WatchlistItem, IntrinsicValue } from '../types';
+import type {
+  Holding,
+  Transaction,
+  Note,
+  CashAccount,
+  WatchlistItem,
+  IntrinsicValue,
+  TickerEntry,
+  TickerPortfolioInfo,
+} from '../types';
+
+function toHolding(entry: TickerEntry): Holding | null {
+  if (!entry.portfolio) return null;
+  return {
+    id: entry.ticker,
+    ticker: entry.ticker,
+    name: entry.name,
+    ...entry.portfolio,
+  };
+}
+
+function toWatchlistItem(entry: TickerEntry): WatchlistItem {
+  return {
+    id: entry.ticker,
+    ticker: entry.ticker,
+    name: entry.name,
+    tags: entry.userTags,
+    autoTags: entry.autoTags,
+    addedAt: entry.addedAt,
+  };
+}
+
+function intrinsicId(ticker: string, date: Date): string {
+  return `${ticker.toUpperCase()}|${new Date(date).toISOString()}`;
+}
 
 export function useHoldings() {
-  return useLiveQuery(() => db.holdings.toArray()) ?? [];
+  return useLiveQuery(async () => {
+    const tickers = await db.tickers.toArray();
+    return tickers
+      .map(toHolding)
+      .filter((h): h is Holding => h != null)
+      .sort((a, b) => a.ticker.localeCompare(b.ticker));
+  }) ?? [];
 }
 
 export function useTransactions(ticker?: string) {
@@ -66,33 +106,79 @@ export async function addHolding(
   holding: Omit<Holding, 'id' | 'createdAt' | 'updatedAt'>
 ) {
   const now = new Date();
+  const ticker = holding.ticker.toUpperCase();
   const reported =
-    (await fetchTickerCurrency(holding.ticker)) ??
+    (await fetchTickerCurrency(ticker)) ??
     normalizeCurrencyWithDefault(holding.currency);
-  const id = await db.holdings.add({
-    ...holding,
+  const existing = await db.tickers.get(ticker);
+  const portfolio: TickerPortfolioInfo = {
+    shares: holding.shares,
+    avgCost: holding.avgCost,
     currency: reported,
     country: holding.country ?? '',
+    sector: holding.sector,
     drip: holding.drip ?? false,
     dividendTaxRate: holding.dividendTaxRate ?? 0,
     addedDate: holding.addedDate ?? now,
     createdAt: now,
     updatedAt: now,
+  };
+  const autoTags = existing?.autoTags ?? [];
+  await db.tickers.put({
+    ticker,
+    name: holding.name,
+    userTags: existing?.userTags ?? [],
+    autoTags: autoTags.includes(PORTFOLIO_AUTO_TAG)
+      ? autoTags
+      : [...autoTags, PORTFOLIO_AUTO_TAG],
+    addedAt: existing?.addedAt ?? portfolio.addedDate,
+    intrinsicValues: existing?.intrinsicValues ?? [],
+    portfolio,
   });
-  await syncPortfolioToWatchlist();
   notifyDataChanged();
-  return id;
+  return ticker;
 }
 
-export async function updateHolding(id: number, changes: Partial<Holding>) {
-  await db.holdings.update(id, { ...changes, updatedAt: new Date() });
-  await syncPortfolioToWatchlist();
+export async function updateHolding(id: string, changes: Partial<Holding>) {
+  const ticker = id.toUpperCase();
+  const existing = await db.tickers.get(ticker);
+  if (!existing?.portfolio) return;
+  const nextTicker = (changes.ticker ?? ticker).toUpperCase();
+  const updated: TickerEntry = {
+    ...existing,
+    ticker: nextTicker,
+    name: changes.name ?? existing.name,
+    portfolio: {
+      ...existing.portfolio,
+      ...changes,
+      currency: changes.currency ?? existing.portfolio.currency,
+      addedDate: changes.addedDate ?? existing.portfolio.addedDate,
+      updatedAt: new Date(),
+    },
+  };
+  if (!updated.autoTags.includes(PORTFOLIO_AUTO_TAG)) {
+    updated.autoTags = [...updated.autoTags, PORTFOLIO_AUTO_TAG];
+  }
+  if (nextTicker !== ticker) {
+    await db.transaction('rw', db.tickers, async () => {
+      await db.tickers.delete(ticker);
+      await db.tickers.put(updated);
+    });
+  } else {
+    await db.tickers.put(updated);
+  }
   notifyDataChanged();
 }
 
-export async function deleteHolding(id: number) {
-  await db.holdings.delete(id);
-  await syncPortfolioToWatchlist();
+export async function deleteHolding(id: string) {
+  const ticker = id.toUpperCase();
+  const existing = await db.tickers.get(ticker);
+  if (!existing) return;
+  await db.tickers.put({
+    ...existing,
+    autoTags: existing.autoTags.filter((t) => t !== PORTFOLIO_AUTO_TAG),
+    portfolio: undefined,
+  });
   notifyDataChanged();
 }
 
@@ -163,15 +249,20 @@ export async function deleteCashAccount(id: number) {
 // ---- Watchlist CRUD ----
 
 export function useWatchlist() {
-  return useLiveQuery(() => db.watchlist.toArray()) ?? [];
+  return useLiveQuery(async () => {
+    const tickers = await db.tickers.toArray();
+    return tickers
+      .map(toWatchlistItem)
+      .sort((a, b) => a.ticker.localeCompare(b.ticker));
+  }) ?? [];
 }
 
 export function useWatchlistTags() {
   return useLiveQuery(async () => {
-    const items = await db.watchlist.toArray();
+    const items = await db.tickers.toArray();
     const tags = new Set<string>();
     for (const w of items) {
-      for (const t of w.tags) tags.add(t);
+      for (const t of w.userTags) tags.add(t);
       for (const t of w.autoTags ?? []) tags.add(t);
     }
     return Array.from(tags).sort();
@@ -183,31 +274,41 @@ export async function addWatchlistItem(
     autoTags?: string[];
   }
 ) {
-  const existing = await db.watchlist
-    .where('ticker')
-    .equals(item.ticker.toUpperCase())
-    .first();
-  if (existing) return existing.id!;
-  const id = await db.watchlist.add({
-    ...item,
-    ticker: item.ticker.toUpperCase(),
+  const ticker = item.ticker.toUpperCase();
+  const existing = await db.tickers.get(ticker);
+  if (existing) return existing.ticker;
+  await db.tickers.add({
+    ticker,
+    name: item.name,
+    userTags: item.tags,
     autoTags: item.autoTags ?? [],
+    intrinsicValues: [],
     addedAt: new Date(),
   });
   notifyDataChanged();
-  return id;
+  return ticker;
 }
 
 export async function updateWatchlistItem(
-  id: number,
+  id: string,
   changes: Partial<WatchlistItem>
 ) {
-  await db.watchlist.update(id, changes);
+  const ticker = id.toUpperCase();
+  const existing = await db.tickers.get(ticker);
+  if (!existing) return;
+  await db.tickers.put({
+    ...existing,
+    ticker: changes.ticker?.toUpperCase() ?? existing.ticker,
+    name: changes.name ?? existing.name,
+    userTags: changes.tags ?? existing.userTags,
+    autoTags: changes.autoTags ?? existing.autoTags,
+    addedAt: changes.addedAt ?? existing.addedAt,
+  });
   notifyDataChanged();
 }
 
-export async function deleteWatchlistItem(id: number) {
-  await db.watchlist.delete(id);
+export async function deleteWatchlistItem(id: string) {
+  await db.tickers.delete(id.toUpperCase());
   notifyDataChanged();
 }
 
@@ -217,10 +318,15 @@ export function useIntrinsicValues(ticker?: string) {
   return useLiveQuery(
     async () => {
       if (!ticker) return [];
-      return db.intrinsicValues
-        .where('ticker')
-        .equals(ticker.toUpperCase())
-        .sortBy('date');
+      const entry = await db.tickers.get(ticker.toUpperCase());
+      return (entry?.intrinsicValues ?? [])
+        .slice()
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+        .map((iv) => ({
+          ...iv,
+          id: intrinsicId(ticker, iv.date),
+          ticker: ticker.toUpperCase(),
+        }));
     },
     [ticker]
   ) ?? [];
@@ -228,15 +334,22 @@ export function useIntrinsicValues(ticker?: string) {
 
 export function useLatestIntrinsicValues() {
   return useLiveQuery(async () => {
-    const all = await db.intrinsicValues.toArray();
+    const all = await db.tickers.toArray();
     const latest = new Map<string, IntrinsicValue>();
-    for (const iv of all) {
-      const existing = latest.get(iv.ticker);
-      if (
-        !existing ||
-        new Date(iv.date).getTime() > new Date(existing.date).getTime()
-      ) {
-        latest.set(iv.ticker, iv);
+    for (const entry of all) {
+      for (const iv of entry.intrinsicValues) {
+        const value = {
+          ...iv,
+          id: intrinsicId(entry.ticker, iv.date),
+          ticker: entry.ticker,
+        };
+        const existing = latest.get(entry.ticker);
+        if (
+          !existing ||
+          new Date(value.date).getTime() > new Date(existing.date).getTime()
+        ) {
+          latest.set(entry.ticker, value);
+        }
       }
     }
     return latest;
@@ -252,71 +365,53 @@ export async function addIntrinsicValue(
   const reported =
     (await fetchTickerCurrency(ticker)) ??
     normalizeCurrencyWithDefault(currency);
-  const id = await db.intrinsicValues.add({
-    ticker: ticker.toUpperCase(),
-    value,
-    currency: reported,
-    date: date ?? new Date(),
+  const key = ticker.toUpperCase();
+  const entry = await db.tickers.get(key);
+  const intrinsicValues = [
+    ...(entry?.intrinsicValues ?? []),
+    { value, currency: reported, date: date ?? new Date() },
+  ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  await db.tickers.put({
+    ticker: key,
+    name: entry?.name ?? key,
+    userTags: entry?.userTags ?? [],
+    autoTags: entry?.autoTags ?? [],
+    addedAt: entry?.addedAt ?? new Date(),
+    portfolio: entry?.portfolio,
+    intrinsicValues,
   });
   notifyDataChanged();
-  return id;
+  return intrinsicId(key, date ?? new Date());
 }
 
-export async function deleteIntrinsicValue(id: number) {
-  await db.intrinsicValues.delete(id);
+export async function deleteIntrinsicValue(id: string) {
+  const [ticker, isoDate] = id.split('|');
+  const entry = await db.tickers.get(ticker);
+  if (!entry) return;
+  await db.tickers.put({
+    ...entry,
+    intrinsicValues: entry.intrinsicValues.filter(
+      (iv) => new Date(iv.date).toISOString() !== isoDate
+    ),
+  });
   notifyDataChanged();
 }
 
 // ---- Portfolio-to-Watchlist Sync ----
 
 export async function syncPortfolioToWatchlist() {
-  // Deduplicate any existing duplicate tickers
-  await db.transaction('rw', db.watchlist, async () => {
-    const all = await db.watchlist.toArray();
-    const seen = new Map<string, number>();
-    for (const w of all) {
-      if (seen.has(w.ticker)) {
-        await db.watchlist.delete(w.id!);
-      } else {
-        seen.set(w.ticker, w.id!);
-      }
-    }
-  });
-
-  await db.transaction('rw', db.watchlist, db.holdings, async () => {
-    const holdings = await db.holdings.toArray();
-    const existing = await db.watchlist.toArray();
-    const existingByTicker = new Map(existing.map((w) => [w.ticker, w]));
-
-    for (const h of holdings) {
-      const key = h.ticker.toUpperCase();
-      const item = existingByTicker.get(key);
-      if (item) {
-        const autoTags = item.autoTags ?? [];
-        if (!autoTags.includes(PORTFOLIO_AUTO_TAG)) {
-          await db.watchlist.update(item.id!, {
-            autoTags: [...autoTags, PORTFOLIO_AUTO_TAG],
-          });
-        }
-      } else {
-        await db.watchlist.add({
-          ticker: key,
-          name: h.name,
-          tags: [],
-          autoTags: [PORTFOLIO_AUTO_TAG],
-          addedAt: new Date(),
+  await db.transaction('rw', db.tickers, async () => {
+    const entries = await db.tickers.toArray();
+    for (const entry of entries) {
+      const hasPortfolio = !!entry.portfolio;
+      const hasTag = entry.autoTags.includes(PORTFOLIO_AUTO_TAG);
+      if (hasPortfolio && !hasTag) {
+        await db.tickers.update(entry.ticker, {
+          autoTags: [...entry.autoTags, PORTFOLIO_AUTO_TAG],
         });
-      }
-    }
-
-    const holdingTickers = new Set(
-      holdings.map((h) => h.ticker.toUpperCase())
-    );
-    for (const w of existing) {
-      const autoTags = w.autoTags ?? [];
-      if (autoTags.includes(PORTFOLIO_AUTO_TAG) && !holdingTickers.has(w.ticker)) {
-        await db.watchlist.update(w.id!, {
-          autoTags: autoTags.filter((t) => t !== PORTFOLIO_AUTO_TAG),
+      } else if (!hasPortfolio && hasTag) {
+        await db.tickers.update(entry.ticker, {
+          autoTags: entry.autoTags.filter((t) => t !== PORTFOLIO_AUTO_TAG),
         });
       }
     }

@@ -1,5 +1,6 @@
 export interface Holding {
-  id?: number;
+  /** IndexedDB ticker key. */
+  id?: string;
   ticker: string;
   name: string;
   shares: number;
@@ -17,7 +18,7 @@ export interface Holding {
 
 export interface Transaction {
   id?: number;
-  holdingId?: number;
+  holdingId?: string;
   ticker: string;
   type: 'buy' | 'sell' | 'dividend' | 'interest';
   shares: number;
@@ -64,7 +65,8 @@ export interface CashAccount {
 }
 
 export interface WatchlistItem {
-  id?: number;
+  /** IndexedDB ticker key. */
+  id?: string;
   ticker: string;
   name: string;
   /** User-specified tags. */
@@ -79,7 +81,8 @@ export interface WatchlistItem {
 }
 
 export interface IntrinsicValue {
-  id?: number;
+  /** Synthetic key used by the UI; persisted by ticker/date in TickerEntry. */
+  id?: string;
   ticker: string;
   value: number;
   /** ISO 4217 currency for value. */
@@ -89,7 +92,7 @@ export interface IntrinsicValue {
 
 export interface DividendRecord {
   id?: number;
-  holdingId: number;
+  holdingId: string;
   ticker: string;
   exDate: number;
   amount: number;
@@ -97,4 +100,39 @@ export interface DividendRecord {
   taxWithheld: number;
   reinvestedShares: number;
   processedAt: Date;
+}
+
+export interface TickerPortfolioInfo {
+  shares: number;
+  avgCost: number;
+  /** ISO 4217 currency for avgCost and cost basis. */
+  currency: string;
+  sector: string;
+  country: string;
+  drip: boolean;
+  dividendTaxRate: number;
+  addedDate: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface TickerIntrinsicValue {
+  value: number;
+  /** ISO 4217 currency. */
+  currency: string;
+  date: Date;
+}
+
+/**
+ * Source-of-truth IndexedDB row. This mirrors the backing JSON ticker entry,
+ * except date fields are hydrated as Date instances while stored locally.
+ */
+export interface TickerEntry {
+  ticker: string;
+  name: string;
+  userTags: string[];
+  autoTags: string[];
+  addedAt: Date;
+  portfolio?: TickerPortfolioInfo;
+  intrinsicValues: TickerIntrinsicValue[];
 }
