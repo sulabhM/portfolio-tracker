@@ -138,10 +138,7 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
         const fileHasData =
           fileData &&
           ((fileData.tickers?.length ?? 0) > 0 ||
-            (fileData.notes?.length ?? 0) > 0 ||
-            // Backward-compat: detect data in a v1 backup file.
-            ((fileData as unknown as { holdings?: unknown[] }).holdings?.length ?? 0) > 0 ||
-            ((fileData as unknown as { watchlist?: unknown[] }).watchlist?.length ?? 0) > 0);
+            (fileData.notes?.length ?? 0) > 0);
         const localHasData = tickersCount > 0;
         if (fileHasData && localHasData) setConflictPending(true);
       } catch {
