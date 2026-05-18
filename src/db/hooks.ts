@@ -14,7 +14,54 @@ import type {
   TickerEntry,
   TickerPortfolioInfo,
   DividendRecord,
+  DataVersion,
 } from '../types';
+
+// ---- Data Version (singleton metadata) ----
+//
+// Every CRUD helper below calls `bumpDataVersion()` after its IndexedDB write
+// succeeds. That is the one and only place the local data version is advanced;
+// the resulting `{ counter, updatedAt }` is what gets written into the synced
+// JSON file so it can later be compared to the local DB to tell which is newer.
+
+const DATA_VERSION_KEY = 'dataVersion' as const;
+
+/**
+ * Atomically increments the data-version counter, stamps `updatedAt`, and kicks
+ * the debounced file sync. Call this after every successful IndexedDB write.
+ */
+export async function bumpDataVersion(): Promise<DataVersion> {
+  const next = await db.transaction('rw', db.meta, async () => {
+    const current = await db.meta.get(DATA_VERSION_KEY);
+    const updated: DataVersion = {
+      key: DATA_VERSION_KEY,
+      counter: (current?.counter ?? 0) + 1,
+      updatedAt: new Date(),
+    };
+    await db.meta.put(updated);
+    return updated;
+  });
+  notifyDataChanged();
+  return next;
+}
+
+/** Returns the current local data version, or null if no edits have ever been recorded. */
+export async function getDataVersion(): Promise<DataVersion | null> {
+  return (await db.meta.get(DATA_VERSION_KEY)) ?? null;
+}
+
+/**
+ * Overwrite the data version (used after import so the local version matches
+ * whatever the file said). Does not trigger a sync.
+ */
+export async function setDataVersion(version: Omit<DataVersion, 'key'>): Promise<void> {
+  await db.meta.put({ ...version, key: DATA_VERSION_KEY });
+}
+
+/** Live-updating view of the local data version. */
+export function useDataVersion(): DataVersion | null {
+  return useLiveQuery(async () => (await db.meta.get(DATA_VERSION_KEY)) ?? null) ?? null;
+}
 
 function toHolding(entry: TickerEntry): Holding | null {
   if (!entry.portfolio) return null;
@@ -136,7 +183,7 @@ export async function addHolding(
     intrinsicValues: existing?.intrinsicValues ?? [],
     portfolio,
   });
-  notifyDataChanged();
+  await bumpDataVersion();
   return ticker;
 }
 
@@ -168,7 +215,7 @@ export async function updateHolding(id: string, changes: Partial<Holding>) {
   } else {
     await db.tickers.put(updated);
   }
-  notifyDataChanged();
+  await bumpDataVersion();
 }
 
 export async function deleteHolding(id: string) {
@@ -180,7 +227,7 @@ export async function deleteHolding(id: string) {
     autoTags: existing.autoTags.filter((t) => t !== PORTFOLIO_AUTO_TAG),
     portfolio: undefined,
   });
-  notifyDataChanged();
+  await bumpDataVersion();
 }
 
 // ---- Transaction CRUD ----
@@ -190,13 +237,13 @@ export async function addTransaction(tx: Omit<Transaction, 'id'>) {
     ...tx,
     currency: tx.currency ?? DEFAULT_CURRENCY,
   });
-  notifyDataChanged();
+  await bumpDataVersion();
   return id;
 }
 
 export async function deleteTransaction(id: number) {
   await db.transactions.delete(id);
-  notifyDataChanged();
+  await bumpDataVersion();
 }
 
 // ---- Note CRUD ----
@@ -206,18 +253,18 @@ export async function addNote(
 ) {
   const now = new Date();
   const id = await db.notes.add({ ...note, createdAt: now, updatedAt: now });
-  notifyDataChanged();
+  await bumpDataVersion();
   return id;
 }
 
 export async function updateNote(id: number, changes: Partial<Note>) {
   await db.notes.update(id, { ...changes, updatedAt: new Date() });
-  notifyDataChanged();
+  await bumpDataVersion();
 }
 
 export async function deleteNote(id: number) {
   await db.notes.delete(id);
-  notifyDataChanged();
+  await bumpDataVersion();
 }
 
 // ---- Cash Account CRUD ----
@@ -230,7 +277,7 @@ export async function addCashAccount(
     currency: account.currency ?? DEFAULT_CURRENCY,
     createdAt: new Date(),
   });
-  notifyDataChanged();
+  await bumpDataVersion();
   return id;
 }
 
@@ -239,12 +286,12 @@ export async function updateCashAccount(
   changes: Partial<CashAccount>
 ) {
   await db.cashAccounts.update(id, changes);
-  notifyDataChanged();
+  await bumpDataVersion();
 }
 
 export async function deleteCashAccount(id: number) {
   await db.cashAccounts.delete(id);
-  notifyDataChanged();
+  await bumpDataVersion();
 }
 
 // ---- Dividend Record CRUD ----
@@ -253,7 +300,7 @@ export async function addDividendRecord(
   record: Omit<DividendRecord, 'id'>
 ) {
   const id = await db.dividendRecords.add(record);
-  notifyDataChanged();
+  await bumpDataVersion();
   return id;
 }
 
@@ -296,7 +343,7 @@ export async function addWatchlistItem(
     intrinsicValues: [],
     addedAt: new Date(),
   });
-  notifyDataChanged();
+  await bumpDataVersion();
   return ticker;
 }
 
@@ -315,12 +362,12 @@ export async function updateWatchlistItem(
     autoTags: changes.autoTags ?? existing.autoTags,
     addedAt: changes.addedAt ?? existing.addedAt,
   });
-  notifyDataChanged();
+  await bumpDataVersion();
 }
 
 export async function deleteWatchlistItem(id: string) {
   await db.tickers.delete(id.toUpperCase());
-  notifyDataChanged();
+  await bumpDataVersion();
 }
 
 // ---- Intrinsic Value CRUD ----
@@ -391,7 +438,7 @@ export async function addIntrinsicValue(
     portfolio: entry?.portfolio,
     intrinsicValues,
   });
-  notifyDataChanged();
+  await bumpDataVersion();
   return intrinsicId(key, date ?? new Date());
 }
 
@@ -405,7 +452,7 @@ export async function deleteIntrinsicValue(id: string) {
       (iv) => new Date(iv.date).toISOString() !== isoDate
     ),
   });
-  notifyDataChanged();
+  await bumpDataVersion();
 }
 
 // ---- Portfolio-to-Watchlist Sync ----
@@ -427,5 +474,5 @@ export async function syncPortfolioToWatchlist() {
       }
     }
   });
-  notifyDataChanged();
+  await bumpDataVersion();
 }
