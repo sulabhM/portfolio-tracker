@@ -48,7 +48,7 @@ export interface TickerEntry {
   ticker: string;
   name: string;
   /** User-specified tags. */
-  tags: string[];
+  userTags: string[];
   /**
    * Auto-generated tags derived from data sources (Yahoo recommendation,
    * dividend status, portfolio membership). Refreshed on every data refresh
@@ -95,6 +95,14 @@ function toIso(val: string | Date): string {
   return (val instanceof Date ? val : new Date(val)).toISOString();
 }
 
+/** v2 tickers may use `userTags` or the earlier `tags` field name. */
+function readUserTags(entry: {
+  userTags?: string[];
+  tags?: string[];
+}): string[] {
+  return entry.userTags ?? entry.tags ?? [];
+}
+
 /** Build the flattened per-ticker list from the separate IndexedDB tables. */
 function buildTickerEntries(
   holdings: Holding[],
@@ -129,7 +137,7 @@ function buildTickerEntries(
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
     const name = w?.name ?? h?.name ?? ticker;
-    const tags = w?.tags ?? [];
+    const userTags = w?.tags ?? [];
     const autoTagsRaw = (w?.autoTags ?? []).slice();
     // Keep the portfolio auto-tag synchronized with actual portfolio membership
     // so the exported file is internally consistent regardless of any stale
@@ -145,7 +153,7 @@ function buildTickerEntries(
     const entry: TickerEntry = {
       ticker,
       name,
-      tags,
+      userTags,
       autoTags,
       addedAt,
       intrinsicValues: ivs.map((iv) => ({
@@ -292,7 +300,7 @@ export async function importAllData(data: BackupData | BackupDataV1): Promise<vo
         watchlist.push({
           ticker,
           name: entry.name,
-          tags: entry.tags.slice(),
+          tags: readUserTags(entry).slice(),
           autoTags: Array.from(autoTagSet),
           addedAt,
         });
