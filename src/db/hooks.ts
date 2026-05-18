@@ -2,6 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from './database';
 import { notifyDataChanged } from '../services/dataSyncRegistry';
 import { DEFAULT_CURRENCY, normalizeCurrencyWithDefault } from '../constants/currencies';
+import { PORTFOLIO_AUTO_TAG } from '../constants/autoTags';
 import { fetchTickerCurrency } from '../services/tickerCurrency';
 import type { Holding, Transaction, Note, CashAccount, WatchlistItem, IntrinsicValue } from '../types';
 
@@ -171,13 +172,16 @@ export function useWatchlistTags() {
     const tags = new Set<string>();
     for (const w of items) {
       for (const t of w.tags) tags.add(t);
+      for (const t of w.autoTags ?? []) tags.add(t);
     }
     return Array.from(tags).sort();
   }) ?? [];
 }
 
 export async function addWatchlistItem(
-  item: Omit<WatchlistItem, 'id' | 'addedAt'>
+  item: Omit<WatchlistItem, 'id' | 'addedAt' | 'autoTags'> & {
+    autoTags?: string[];
+  }
 ) {
   const existing = await db.watchlist
     .where('ticker')
@@ -187,6 +191,7 @@ export async function addWatchlistItem(
   const id = await db.watchlist.add({
     ...item,
     ticker: item.ticker.toUpperCase(),
+    autoTags: item.autoTags ?? [],
     addedAt: new Date(),
   });
   notifyDataChanged();
@@ -282,22 +287,23 @@ export async function syncPortfolioToWatchlist() {
     const holdings = await db.holdings.toArray();
     const existing = await db.watchlist.toArray();
     const existingByTicker = new Map(existing.map((w) => [w.ticker, w]));
-    const portfolioTag = 'portfolio';
 
     for (const h of holdings) {
       const key = h.ticker.toUpperCase();
       const item = existingByTicker.get(key);
       if (item) {
-        if (!item.tags.includes(portfolioTag)) {
+        const autoTags = item.autoTags ?? [];
+        if (!autoTags.includes(PORTFOLIO_AUTO_TAG)) {
           await db.watchlist.update(item.id!, {
-            tags: [...item.tags, portfolioTag],
+            autoTags: [...autoTags, PORTFOLIO_AUTO_TAG],
           });
         }
       } else {
         await db.watchlist.add({
           ticker: key,
           name: h.name,
-          tags: [portfolioTag],
+          tags: [],
+          autoTags: [PORTFOLIO_AUTO_TAG],
           addedAt: new Date(),
         });
       }
@@ -307,9 +313,11 @@ export async function syncPortfolioToWatchlist() {
       holdings.map((h) => h.ticker.toUpperCase())
     );
     for (const w of existing) {
-      if (w.tags.includes(portfolioTag) && !holdingTickers.has(w.ticker)) {
-        const newTags = w.tags.filter((t) => t !== portfolioTag);
-        await db.watchlist.update(w.id!, { tags: newTags });
+      const autoTags = w.autoTags ?? [];
+      if (autoTags.includes(PORTFOLIO_AUTO_TAG) && !holdingTickers.has(w.ticker)) {
+        await db.watchlist.update(w.id!, {
+          autoTags: autoTags.filter((t) => t !== PORTFOLIO_AUTO_TAG),
+        });
       }
     }
   });

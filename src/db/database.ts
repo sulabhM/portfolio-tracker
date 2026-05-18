@@ -1,4 +1,5 @@
 import Dexie, { type Table } from 'dexie';
+import { splitLegacyTags } from '../constants/autoTags';
 import type {
   Holding,
   Transaction,
@@ -134,6 +135,30 @@ export class PortfolioDatabase extends Dexie {
           .toCollection()
           .modify((p: { currency?: string }) => {
             if (p.currency === undefined) p.currency = 'USD';
+          });
+      });
+
+    // v7: split watchlist `tags` into user `tags` + auto-generated `autoTags`.
+    this.version(7)
+      .stores({
+        holdings: '++id, ticker, sector',
+        transactions: '++id, holdingId, ticker, type, date',
+        notes: '++id, *tags, *tickerLinks',
+        priceCache: 'ticker',
+        cashAccounts: '++id, name',
+        dividendRecords: '++id, holdingId, ticker, [ticker+exDate]',
+        watchlist: '++id, ticker, *tags, *autoTags',
+        intrinsicValues: '++id, ticker, date',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('watchlist')
+          .toCollection()
+          .modify((w: { tags?: string[]; autoTags?: string[] }) => {
+            if (Array.isArray(w.autoTags)) return;
+            const { tags, autoTags } = splitLegacyTags(w.tags ?? []);
+            w.tags = tags;
+            w.autoTags = autoTags;
           });
       });
   }

@@ -67,7 +67,14 @@ export interface WatchlistItem {
   id?: number;
   ticker: string;
   name: string;
+  /** User-specified tags. */
   tags: string[];
+  /**
+   * Auto-generated tags derived from Yahoo Finance data (recommendation,
+   * dividend) and portfolio membership. Refreshed on every data refresh
+   * and on portfolio changes. Never edited directly by the user.
+   */
+  autoTags: string[];
   addedAt: Date;
 }
 
