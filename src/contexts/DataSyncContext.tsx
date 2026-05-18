@@ -32,7 +32,7 @@ import {
   type SyncStatus,
 } from './dataSyncContextValue';
 
-const SYNC_DEBOUNCE_MS = 800;
+const SYNC_DEBOUNCE_MS = 200;
 
 export function DataSyncProvider({ children }: { children: ReactNode }) {
   const [syncFilePath, setSyncFilePathState] = useState<string | null>(
@@ -48,33 +48,88 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
     isTauri() ? getStoredSyncPath() : null
   );
   const conflictCheckedRef = useRef(false);
+  /**
+   * `pendingSyncRef` is true between the moment a CRUD helper calls
+   * `notifyDataChanged()` and the moment the resulting sync writes the file
+   * successfully. The close-time flushers (Tauri `onCloseRequested`, browser
+   * `visibilitychange`/`pagehide`) use it to decide whether anything is owed
+   * to the file before the app goes away.
+   */
+  const pendingSyncRef = useRef(false);
+  /**
+   * Holds the currently-running `performSync` promise so concurrent callers
+   * (debounce-triggered, manual, or close-time) coalesce onto the same write
+   * instead of racing — important because both Tauri's `writeTextFile`+rename
+   * and the PWA `FileSystemFileHandle` writable serialize at the OS level and
+   * would otherwise produce undefined results when overlapped.
+   */
+  const inFlightSyncRef = useRef<Promise<void> | null>(null);
 
-  const performSync = useCallback(async () => {
+  const performSync = useCallback(async (): Promise<void> => {
+    if (inFlightSyncRef.current) return inFlightSyncRef.current;
     const target = targetRef.current;
     if (!target) return;
+
+    // Whatever was pending is being captured by this run. If a new mutation
+    // arrives during the export/write, `notifyDataChanged` re-sets the flag
+    // and re-arms the debounce, so the next sync will pick that up.
+    pendingSyncRef.current = false;
     setSyncStatus('syncing');
     setSyncError(null);
+
+    const run = (async () => {
+      try {
+        const data = await exportAllData();
+        await writeSyncFile(target, data);
+        setLastSyncAt(Date.now());
+        setSyncStatus('idle');
+      } catch (e) {
+        // The write didn't land — keep the pending flag so the next flush
+        // (debounce tick or close-time hook) tries again.
+        pendingSyncRef.current = true;
+        const msg = e instanceof Error ? e.message : String(e);
+        setSyncError(msg);
+        setSyncStatus('error');
+      }
+    })();
+    inFlightSyncRef.current = run;
     try {
-      const data = await exportAllData();
-      await writeSyncFile(target, data);
-      setLastSyncAt(Date.now());
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setSyncError(msg);
-      setSyncStatus('error');
-      return;
+      await run;
+    } finally {
+      inFlightSyncRef.current = null;
     }
-    setSyncStatus('idle');
   }, []);
 
   const requestSync = useCallback(async () => {
     await performSync();
   }, [performSync]);
 
+  /**
+   * Wait for any in-flight sync to finish and, if anything is still pending
+   * after that (e.g. an edit arrived while the in-flight sync was running),
+   * run one more sync. Used by the close-time hooks to guarantee the file is
+   * caught up before the window goes away.
+   */
+  const ensureFlushed = useCallback(async (): Promise<void> => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = 0;
+    }
+    const inFlight = inFlightSyncRef.current;
+    if (inFlight) {
+      try { await inFlight; } catch { /* surfaced via syncError already */ }
+    }
+    if (pendingSyncRef.current) {
+      try { await performSync(); } catch { /* surfaced via syncError already */ }
+    }
+  }, [performSync]);
+
   useEffect(() => {
     setDataSyncCallback(() => {
+      pendingSyncRef.current = true;
       clearTimeout(debounceRef.current);
       debounceRef.current = window.setTimeout(() => {
+        debounceRef.current = 0;
         performSync();
       }, SYNC_DEBOUNCE_MS);
     });
@@ -83,6 +138,83 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
       clearTimeout(debounceRef.current);
     };
   }, [performSync]);
+
+  /**
+   * Browser-side best-effort flush. `visibilitychange` to 'hidden' fires
+   * reliably on tab close, OS-level backgrounding, and (on mobile) when the
+   * app is swiped away; `pagehide` is the modern replacement for `unload`.
+   * We cannot truly await async work inside these handlers, but for the PWA
+   * path `FileSystemFileHandle.createWritable()` is journalled and atomic, so
+   * a write started here is either committed in full or not at all — never a
+   * half-written file. Tauri builds skip this and rely on the close-requested
+   * handler below, which can prevent the close until the write resolves.
+   */
+  useEffect(() => {
+    if (isTauri()) return;
+    if (typeof document === 'undefined' || typeof window === 'undefined') return;
+    const flush = () => {
+      if (!pendingSyncRef.current && !inFlightSyncRef.current) return;
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+        debounceRef.current = 0;
+      }
+      void performSync();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, [performSync]);
+
+  /**
+   * Tauri close-requested handler. Unlike the browser unload events we can
+   * actually block the close until the file write completes: prevent the
+   * default close, await `ensureFlushed`, then re-invoke `window.close()`
+   * with the `bypassingFlushRef` flag set so the handler short-circuits and
+   * lets the second close go through.
+   */
+  const bypassingFlushRef = useRef(false);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const w = getCurrentWindow();
+        const dispose = await w.onCloseRequested(async (event) => {
+          if (bypassingFlushRef.current) return;
+          if (!pendingSyncRef.current && !inFlightSyncRef.current) return;
+          event.preventDefault();
+          try {
+            await ensureFlushed();
+          } finally {
+            bypassingFlushRef.current = true;
+            try {
+              await w.close();
+            } catch {
+              // last resort — if close fails we don't trap the user
+              bypassingFlushRef.current = false;
+            }
+          }
+        });
+        if (cancelled) dispose();
+        else unlisten = dispose;
+      } catch {
+        // Best effort: if the window API isn't available the user just loses
+        // the close-time guarantee, but the app still functions.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [ensureFlushed]);
 
   useEffect(() => {
     if (isTauri()) return;
