@@ -14,7 +14,7 @@ export function SyncConflictDialog() {
     >
       <div className="space-y-4">
         <p className="text-sm text-gray-600 dark:text-slate-400">
-          Both your sync file and this app have data. Choose which to use:
+          The sync file looks newer than this app&apos;s data. Choose which to use:
         </p>
         {syncFilePath && (
           <p className="text-xs text-gray-500 dark:text-slate-500 truncate" title={syncFilePath}>

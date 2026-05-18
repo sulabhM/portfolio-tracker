@@ -5,8 +5,12 @@ import {
   useRef,
   type ReactNode,
 } from 'react';
-import { db } from '../db/database';
-import { exportAllData, importAllData } from '../services/dataSync';
+import {
+  exportAllData,
+  importAllData,
+  compareDataVersions,
+  type BackupDataVersion,
+} from '../services/dataSync';
 import {
   isTauri,
   readSyncFile,
@@ -21,6 +25,7 @@ import {
   setStoredSyncHandle,
 } from '../services/syncFileStore';
 import { setDataSyncCallback } from '../services/dataSyncRegistry';
+import { getDataVersion } from '../db/hooks';
 import {
   DataSyncContext,
   type ConflictChoice,
@@ -131,16 +136,37 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
     conflictCheckedRef.current = true;
     const check = async () => {
       try {
-        const [fileData, tickersCount] = await Promise.all([
+        const [fileData, localVersion] = await Promise.all([
           readSyncFile(target),
-          db.tickers.count(),
+          getDataVersion(),
         ]);
-        const fileHasData =
-          fileData &&
-          ((fileData.tickers?.length ?? 0) > 0 ||
-            (fileData.notes?.length ?? 0) > 0);
-        const localHasData = tickersCount > 0;
-        if (fileHasData && localHasData) setConflictPending(true);
+        if (!fileData) return;
+
+        // If the file is empty there is nothing to lose — the next debounced
+        // sync will overwrite it with the local DB, so we don't prompt.
+        const fileHasContent =
+          (fileData.tickers?.length ?? 0) > 0 ||
+          (fileData.notes?.length ?? 0) > 0 ||
+          (fileData.transactions?.length ?? 0) > 0 ||
+          (fileData.cashAccounts?.length ?? 0) > 0 ||
+          (fileData.dividendRecords?.length ?? 0) > 0;
+        if (!fileHasContent) return;
+
+        // Files written before the versioning system are treated as
+        // counter 0 so any locally-edited DB is unambiguously newer.
+        const fileVersion: BackupDataVersion = fileData.dataVersion ?? {
+          counter: 0,
+          updatedAt: new Date(0).toISOString(),
+        };
+
+        // Only prompt when the file may contain data we'd lose by syncing
+        // the local DB out. If the local DB is at the same version, or
+        // strictly newer, we silently keep the IndexedDB state and let the
+        // next debounced sync flush it to the file.
+        const relation = compareDataVersions(localVersion, fileVersion);
+        if (relation === 'file-newer' || relation === 'diverged') {
+          setConflictPending(true);
+        }
       } catch {
         // ignore
       }

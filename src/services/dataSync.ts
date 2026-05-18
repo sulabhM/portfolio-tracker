@@ -9,7 +9,18 @@ import type {
   TickerEntry as DbTickerEntry,
 } from '../types';
 
-const BACKUP_VERSION = 2;
+const BACKUP_VERSION = 3;
+
+/**
+ * Monotonic versioning metadata carried by both IndexedDB and the synced
+ * JSON file. `counter` is bumped on every CRUD write; `updatedAt` is the
+ * wall-clock time of that bump.
+ */
+export interface BackupDataVersion {
+  counter: number;
+  /** ISO date string. */
+  updatedAt: string;
+}
 
 /** Per-ticker portfolio info. Present only when the ticker is in the portfolio. */
 export interface TickerPortfolioInfo {
@@ -62,6 +73,11 @@ export interface TickerEntry {
 export interface BackupData {
   version: number;
   exportedAt: string;
+  /**
+   * Mirrors the IndexedDB `meta.dataVersion` row. Compare with the local
+   * version to decide whether the file or the DB is newer.
+   */
+  dataVersion: BackupDataVersion;
   tickers: TickerEntry[];
   transactions: Array<Omit<Transaction, 'date'> & { date: string }>;
   notes: Array<Omit<Note, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }>;
@@ -82,6 +98,13 @@ function assertCurrentBackupData(data: BackupData): void {
     throw new Error(
       `Unsupported backup version: ${data.version}. Expected ${BACKUP_VERSION}.`
     );
+  }
+  if (
+    !data.dataVersion ||
+    typeof data.dataVersion.counter !== 'number' ||
+    typeof data.dataVersion.updatedAt !== 'string'
+  ) {
+    throw new Error('Invalid backup file: missing or malformed dataVersion.');
   }
   if (!Array.isArray(data.tickers)) {
     throw new Error('Invalid backup file: expected a tickers array.');
@@ -173,18 +196,31 @@ function deserializeTickerEntry(entry: TickerEntry): DbTickerEntry {
 }
 
 export async function exportAllData(): Promise<BackupData> {
-  const [tickers, transactions, notes, cashAccounts, dividendRecords] =
-    await Promise.all([
-      db.tickers.toArray(),
-      db.transactions.toArray(),
-      db.notes.toArray(),
-      db.cashAccounts.toArray(),
-      db.dividendRecords.toArray(),
-    ]);
+  const [
+    dataVersionRow,
+    tickers,
+    transactions,
+    notes,
+    cashAccounts,
+    dividendRecords,
+  ] = await Promise.all([
+    db.meta.get('dataVersion'),
+    db.tickers.toArray(),
+    db.transactions.toArray(),
+    db.notes.toArray(),
+    db.cashAccounts.toArray(),
+    db.dividendRecords.toArray(),
+  ]);
+
+  const dataVersion: BackupDataVersion = {
+    counter: dataVersionRow?.counter ?? 0,
+    updatedAt: toIso(dataVersionRow?.updatedAt ?? new Date(0)),
+  };
 
   return {
     version: BACKUP_VERSION,
     exportedAt: new Date().toISOString(),
+    dataVersion,
     tickers: tickers
       .map(serializeTickerEntry)
       .sort((a, b) => a.ticker.localeCompare(b.ticker)),
@@ -217,6 +253,7 @@ export async function importAllData(data: BackupData): Promise<void> {
       db.cashAccounts,
       db.dividendRecords,
       db.tickers,
+      db.meta,
     ],
     async () => {
       await db.transactions.clear();
@@ -254,6 +291,35 @@ export async function importAllData(data: BackupData): Promise<void> {
           processedAt: toDate(d.processedAt),
         }))
       );
+
+      await db.meta.put({
+        key: 'dataVersion',
+        counter: data.dataVersion.counter,
+        updatedAt: toDate(data.dataVersion.updatedAt),
+      });
     }
   );
+}
+
+/** Result of comparing the local data version with the file's data version. */
+export type DataVersionRelation = 'same' | 'local-newer' | 'file-newer' | 'diverged';
+
+/**
+ * Compare a backup file's `dataVersion` against the local IndexedDB version.
+ *
+ * - 'same'         — both counter and updatedAt match.
+ * - 'local-newer'  — local counter > file counter.
+ * - 'file-newer'   — file counter > local counter.
+ * - 'diverged'     — counters are equal but timestamps differ (e.g. two
+ *   independent edits produced the same counter on different machines).
+ */
+export function compareDataVersions(
+  local: { counter: number; updatedAt: Date } | null,
+  file: BackupDataVersion
+): DataVersionRelation {
+  const localCounter = local?.counter ?? 0;
+  if (localCounter > file.counter) return 'local-newer';
+  if (localCounter < file.counter) return 'file-newer';
+  const localIso = local ? toIso(local.updatedAt) : new Date(0).toISOString();
+  return localIso === file.updatedAt ? 'same' : 'diverged';
 }

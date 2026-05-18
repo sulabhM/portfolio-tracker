@@ -102,6 +102,19 @@ export interface DividendRecord {
   processedAt: Date;
 }
 
+/**
+ * Singleton-row metadata used to version the dataset.
+ * `counter` is bumped on every successful CRUD mutation, and `updatedAt`
+ * records the wall-clock time of that bump. Both the local IndexedDB and
+ * the synced JSON file carry this value so we can tell which side is newer.
+ */
+export interface DataVersion {
+  /** Always the literal string 'dataVersion'; primary key for the meta store. */
+  key: 'dataVersion';
+  counter: number;
+  updatedAt: Date;
+}
+
 export interface TickerPortfolioInfo {
   shares: number;
   avgCost: number;
