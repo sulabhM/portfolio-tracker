@@ -13,6 +13,7 @@ import type {
   IntrinsicValue,
   TickerEntry,
   TickerPortfolioInfo,
+  DividendRecord,
 } from '../types';
 
 function toHolding(entry: TickerEntry): Holding | null {
@@ -244,6 +245,16 @@ export async function updateCashAccount(
 export async function deleteCashAccount(id: number) {
   await db.cashAccounts.delete(id);
   notifyDataChanged();
+}
+
+// ---- Dividend Record CRUD ----
+
+export async function addDividendRecord(
+  record: Omit<DividendRecord, 'id'>
+) {
+  const id = await db.dividendRecords.add(record);
+  notifyDataChanged();
+  return id;
 }
 
 // ---- Watchlist CRUD ----

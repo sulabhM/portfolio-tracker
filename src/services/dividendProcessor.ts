@@ -1,4 +1,10 @@
 import { db } from '../db/database';
+import {
+  updateHolding,
+  updateCashAccount,
+  addTransaction,
+  addDividendRecord,
+} from '../db/hooks';
 import { normalizeCurrencyWithDefault } from '../constants/currencies';
 import { fetchDividendEvents, fetchPrice } from './yahooFinance';
 
@@ -76,12 +82,8 @@ async function processHoldingDividends(ticker: string): Promise<number> {
       const currentPrice = priceData?.price ?? holding.avgCost;
       if (quoteCcy === holdingCcy && currentPrice > 0) {
         reinvestedShares = netPayout / currentPrice;
-        await db.tickers.update(holding.id, {
-          portfolio: {
-            ...entry.portfolio,
-            shares: holding.shares + reinvestedShares,
-            updatedAt: new Date(),
-          },
+        await updateHolding(holding.id, {
+          shares: holding.shares + reinvestedShares,
         });
       } else if (quoteCcy !== holdingCcy) {
         console.warn(
@@ -91,13 +93,13 @@ async function processHoldingDividends(ticker: string): Promise<number> {
     } else if (netPayout > 0) {
       const accounts = await db.cashAccounts.toArray();
       if (accounts.length > 0 && accounts[0].id) {
-        await db.cashAccounts.update(accounts[0].id, {
+        await updateCashAccount(accounts[0].id, {
           balance: accounts[0].balance + netPayout,
         });
       }
     }
 
-    await db.dividendRecords.add({
+    await addDividendRecord({
       holdingId: holding.id,
       ticker: holding.ticker.toUpperCase(),
       exDate: event.date,
@@ -109,7 +111,7 @@ async function processHoldingDividends(ticker: string): Promise<number> {
     });
 
     const eventDate = new Date(event.date * 1000);
-    await db.transactions.add({
+    await addTransaction({
       holdingId: holding.id,
       ticker: holding.ticker.toUpperCase(),
       type: 'dividend',
@@ -179,13 +181,13 @@ export async function accrueInterest(): Promise<number> {
     const interest = newBalance - account.balance;
     totalAccrued += interest;
 
-    await db.cashAccounts.update(account.id, {
+    await updateCashAccount(account.id, {
       balance: newBalance,
       lastInterestDate: now,
     });
 
     if (interest > 0.001) {
-      await db.transactions.add({
+      await addTransaction({
         ticker: account.name,
         type: 'interest',
         shares: 0,
