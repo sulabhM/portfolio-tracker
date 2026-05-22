@@ -125,5 +125,10 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     host: isTauriBuild ? 'localhost' : true,
+    // Cargo constantly rewrites .dll/.exe here during `tauri dev`; watching it
+    // causes EBUSY on Windows when Vite and the linker touch the same files.
+    watch: {
+      ignored: ['**/src-tauri/target/**', '**/src-tauri/gen/**'],
+    },
   },
 })
