@@ -159,6 +159,7 @@ npm run tauri:build
 | `EBUSY` watching `.dll` in `src-tauri\target` during `tauri dev` | Vite ignores `src-tauri/target` in `vite.config.ts` (already configured in this repo) |
 | `TAURI_BUILD` is not recognized | `beforeBuildCommand` must be `npm run build` (Unix `VAR=1 cmd` syntax fails on Windows) |
 | MSI build fails (`light.exe`) | Enable **VBSCRIPT** under Settings → Optional features → More Windows features |
+| `Failed to write sync file: forbidden path` (e.g. Google Drive `G:\...`) | Rebuild after pulling latest; use **Settings → Choose folder** (not a single file). Sync writes a `.tmp` sibling then renames — the folder must be in `fs` scope. |
 
 Yahoo Finance in the desktop app uses Tauri’s HTTP plugin; you usually do not need `VITE_PRICE_PROXY_URL` for local desktop use.
 
