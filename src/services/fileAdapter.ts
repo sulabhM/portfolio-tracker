@@ -22,12 +22,20 @@ export interface PickedSyncFile {
 export async function pickSyncFile(): Promise<PickedSyncFile | null> {
   if (isTauri()) {
     try {
-      const { save } = await import('@tauri-apps/plugin-dialog');
-      const path = await save({
-        defaultPath: SYNC_FILE_NAME,
-        filters: [{ name: 'JSON', extensions: ['json'] }],
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const { join } = await import('@tauri-apps/api/path');
+      // Pick a folder (not a single file) so Tauri grants recursive fs scope for
+      // the directory. Writes use a sibling `.tmp` + rename; a save-dialog path
+      // only scopes the one file, which breaks sync on paths like Google Drive.
+      const dir = await open({
+        directory: true,
+        recursive: true,
+        multiple: false,
+        title: 'Choose folder for sync file',
       });
-      return path ? { path } : null;
+      if (!dir || typeof dir !== 'string') return null;
+      const path = await join(dir, SYNC_FILE_NAME);
+      return { path };
     } catch {
       return null;
     }

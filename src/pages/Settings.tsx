@@ -56,7 +56,7 @@ export function Settings() {
         </h2>
         <p className="text-sm text-gray-500 dark:text-slate-400 mb-4">
           Sync your data to a file (e.g. in a Google Drive folder) so you can use the same file across devices.
-          {isTauri() && ' On desktop, choose a path; the file will auto-save after changes.'}
+          {isTauri() && ' On desktop, choose a folder; the app stores portfolio-tracker-data.json there and auto-saves after changes.'}
         </p>
 
         <div className="space-y-4">
@@ -78,7 +78,7 @@ export function Settings() {
                 onClick={handleChooseFile}
                 className="px-3 py-2 text-sm font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
               >
-                {hasSyncFile ? 'Change file' : 'Choose file'}
+                {hasSyncFile ? 'Change folder' : 'Choose folder'}
               </button>
               {hasSyncFile && (
                 <button
