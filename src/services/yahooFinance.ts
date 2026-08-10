@@ -1,6 +1,6 @@
 import { db } from '../db/database';
 import type { PriceData } from '../types';
-import { normalizeCurrencyWithDefault } from '../constants/currencies';
+import { parseQuotedCurrency } from '../constants/currencies';
 import { isTauri } from './fileAdapter';
 import { debugLog } from './debugLog';
 
@@ -128,8 +128,21 @@ export interface TickerInfo {
 }
 
 function parseQuoteCurrency(priceModule: Record<string, unknown> | undefined): string {
+  return parseQuoteUnit(priceModule).code;
+}
+
+/**
+ * Currency plus the multiplier that converts quoted amounts into the major
+ * unit. London listings report `GBp` and quote in pence, so every price-like
+ * field from that response must be multiplied by `scale` (0.01) — otherwise
+ * positions are valued 100x too high.
+ */
+function parseQuoteUnit(priceModule: Record<string, unknown> | undefined): {
+  code: string;
+  scale: number;
+} {
   const raw = priceModule?.currency;
-  return normalizeCurrencyWithDefault(typeof raw === 'string' ? raw : undefined);
+  return parseQuotedCurrency(typeof raw === 'string' ? raw : undefined);
 }
 
 export interface SearchQuote {
@@ -313,7 +326,7 @@ export async function lookupTicker(ticker: string): Promise<TickerInfo | null> {
         sector,
         country: '',
         quoteType: rawType || 'EQUITY',
-        currency: normalizeCurrencyWithDefault(meta.currency as string),
+        currency: parseQuotedCurrency(meta.currency as string).code,
       };
     }
     return null;
@@ -372,27 +385,28 @@ export async function fetchPrice(ticker: string): Promise<PriceData | null> {
     const p = data.quoteSummary?.result?.[0]?.price;
     if (!p) return cached ?? null;
 
-    const price = p.regularMarketPrice?.raw ?? 0;
-    const prevClose = p.regularMarketPreviousClose?.raw ?? price;
+    const { code: quoteCcy, scale } = parseQuoteUnit(p);
+    const price = (p.regularMarketPrice?.raw ?? 0) * scale;
+    const prevClose = (p.regularMarketPreviousClose?.raw ?? 0) * scale || price;
     const change = price - prevClose;
     const changePercent = prevClose !== 0 ? (change / prevClose) * 100 : 0;
 
-    const state: string = p.marketState ?? '';
+    const state = normalizeMarketState(p.marketState);
     let extPrice: number | undefined;
     let extChange: number | undefined;
     let extChangePercent: number | undefined;
 
     if (state === 'PRE' && p.preMarketPrice?.raw) {
-      const ep = p.preMarketPrice.raw;
+      const ep = p.preMarketPrice.raw * scale;
       extPrice = ep;
-      extChange = p.preMarketChange?.raw ?? ep - prevClose;
+      extChange = (p.preMarketChange?.raw ?? 0) * scale || ep - prevClose;
       extChangePercent = p.preMarketChangePercent?.raw != null
         ? p.preMarketChangePercent.raw * 100
         : prevClose ? ((ep - prevClose) / prevClose) * 100 : 0;
     } else if ((state === 'POST' || state === 'CLOSED') && p.postMarketPrice?.raw) {
-      const ep = p.postMarketPrice.raw;
+      const ep = p.postMarketPrice.raw * scale;
       extPrice = ep;
-      extChange = p.postMarketChange?.raw ?? (ep - price);
+      extChange = (p.postMarketChange?.raw ?? 0) * scale || ep - price;
       extChangePercent = p.postMarketChangePercent?.raw != null
         ? p.postMarketChangePercent.raw * 100
         : price ? (((ep - price) / price) * 100) : 0;
@@ -403,12 +417,16 @@ export async function fetchPrice(ticker: string): Promise<PriceData | null> {
       price,
       change,
       changePercent,
-      currency: parseQuoteCurrency(p),
+      currency: quoteCcy,
       extPrice,
       extChange,
       extChangePercent,
       lastUpdated: new Date(),
     };
+
+    // A malformed or empty quote parses to 0; caching that would serve a bogus
+    // zero for the whole TTL, so keep the last good value instead.
+    if (price <= 0) return cached ?? null;
 
     await db.priceCache.put(priceData);
     return priceData;
@@ -422,6 +440,27 @@ export async function fetchPrice(ticker: string): Promise<PriceData | null> {
 
 export type MarketState = 'PRE' | 'REGULAR' | 'POST' | 'CLOSED';
 
+/**
+ * Yahoo reports more states than we model: `PREPRE` (post-close through early
+ * pre-market) and `POSTPOST` (after the post-market session ends). Anything
+ * unrecognised collapses to CLOSED so callers only ever see the four values in
+ * `MarketState` — consumers index lookup tables by this value.
+ */
+export function normalizeMarketState(raw: unknown): MarketState {
+  switch (typeof raw === 'string' ? raw.toUpperCase() : '') {
+    case 'REGULAR':
+      return 'REGULAR';
+    case 'PRE':
+    case 'PREPRE':
+      return 'PRE';
+    case 'POST':
+    case 'POSTPOST':
+      return 'POST';
+    default:
+      return 'CLOSED';
+  }
+}
+
 let cachedMarketState: { state: MarketState; at: number } | null = null;
 
 export async function fetchMarketState(): Promise<MarketState> {
@@ -433,8 +472,9 @@ export async function fetchMarketState(): Promise<MarketState> {
     const res = await yahooFetch(url);
     if (!res.ok) return 'CLOSED';
     const json = await res.json();
-    const state: MarketState =
-      json.quoteSummary?.result?.[0]?.price?.marketState ?? 'CLOSED';
+    const state = normalizeMarketState(
+      json.quoteSummary?.result?.[0]?.price?.marketState
+    );
     cachedMarketState = { state, at: Date.now() };
     return state;
   } catch {
@@ -486,6 +526,10 @@ function parseDividendMetrics(
   marketPrice = 0
 ): { annualRate: number; yieldPercent: number } {
   const distributionYield = sd.yield?.raw ?? 0;
+  // Verified against GBp-quoted listings: Yahoo reports `dividendRate` in the
+  // major unit (pounds) even when `regularMarketPrice` is in pence, so this
+  // must NOT be scaled. `marketPrice` arrives already scaled, which keeps the
+  // derived branch below in the same unit.
   let annualRate =
     sd.dividendRate?.raw ?? sd.trailingAnnualDividendRate?.raw ?? 0;
   let yieldDecimal =
@@ -524,7 +568,8 @@ export async function fetchDividendRate(
     const sd = row?.summaryDetail;
     if (!sd) return null;
 
-    const marketPrice = row?.price?.regularMarketPrice?.raw ?? 0;
+    const { scale } = parseQuoteUnit(row?.price);
+    const marketPrice = (row?.price?.regularMarketPrice?.raw ?? 0) * scale;
     const { annualRate, yieldPercent } = parseDividendMetrics(sd, marketPrice);
 
     const result: DividendRateData = {
@@ -594,27 +639,28 @@ export async function fetchTickerSummary(
     const sd = r.summaryDetail ?? {};
     const fd = r.financialData ?? {};
 
-    const mktPrice = p.regularMarketPrice?.raw ?? 0;
-    const prevClose = p.regularMarketPreviousClose?.raw ?? mktPrice;
+    const { code: quoteCcy, scale } = parseQuoteUnit(p);
+    const mktPrice = (p.regularMarketPrice?.raw ?? 0) * scale;
+    const prevClose = (p.regularMarketPreviousClose?.raw ?? 0) * scale || mktPrice;
     const change = mktPrice - prevClose;
     const changePct = prevClose !== 0 ? (change / prevClose) * 100 : 0;
 
-    const state: string = p.marketState ?? '';
+    const state = normalizeMarketState(p.marketState);
     let extPrice: number | undefined;
     let extChange: number | undefined;
     let extChangePercent: number | undefined;
 
     if (state === 'PRE' && p.preMarketPrice?.raw) {
-      const ep = p.preMarketPrice.raw;
+      const ep = p.preMarketPrice.raw * scale;
       extPrice = ep;
-      extChange = p.preMarketChange?.raw ?? (ep - prevClose);
+      extChange = (p.preMarketChange?.raw ?? 0) * scale || ep - prevClose;
       extChangePercent = p.preMarketChangePercent?.raw != null
         ? p.preMarketChangePercent.raw * 100
         : prevClose ? ((ep - prevClose) / prevClose) * 100 : 0;
     } else if ((state === 'POST' || state === 'CLOSED') && p.postMarketPrice?.raw) {
-      const ep = p.postMarketPrice.raw;
+      const ep = p.postMarketPrice.raw * scale;
       extPrice = ep;
-      extChange = p.postMarketChange?.raw ?? (ep - mktPrice);
+      extChange = (p.postMarketChange?.raw ?? 0) * scale || ep - mktPrice;
       extChangePercent = p.postMarketChangePercent?.raw != null
         ? p.postMarketChangePercent.raw * 100
         : mktPrice ? (((ep - mktPrice) / mktPrice) * 100) : 0;
@@ -623,13 +669,13 @@ export async function fetchTickerSummary(
     const result: TickerSummary = {
       ticker: key,
       name: p.longName ?? p.shortName ?? key,
-      currency: parseQuoteCurrency(p),
+      currency: quoteCcy,
       price: mktPrice,
       change,
       changePercent: changePct,
-      fiftyTwoWeekLow: sd.fiftyTwoWeekLow?.raw ?? 0,
-      fiftyTwoWeekHigh: sd.fiftyTwoWeekHigh?.raw ?? 0,
-      targetMedian: fd.targetMedianPrice?.raw ?? 0,
+      fiftyTwoWeekLow: (sd.fiftyTwoWeekLow?.raw ?? 0) * scale,
+      fiftyTwoWeekHigh: (sd.fiftyTwoWeekHigh?.raw ?? 0) * scale,
+      targetMedian: (fd.targetMedianPrice?.raw ?? 0) * scale,
       ...(() => {
         const { annualRate, yieldPercent } = parseDividendMetrics(sd, mktPrice);
         return { dividendRate: annualRate, dividendYield: yieldPercent };
@@ -673,15 +719,19 @@ export type ChartRange = '1d' | '3mo' | '6mo' | '1y' | '2y' | '5y' | '10y' | 'ma
 function parseHistoricalChartResponse(data: unknown): HistoricalPrice[] {
   const result = (data as { chart?: { result?: Array<{
     timestamp?: number[];
+    meta?: { currency?: string };
     indicators?: { quote?: Array<{ close?: (number | null)[] }> };
   }> } })?.chart?.result?.[0];
   if (!result) return [];
 
+  // Chart closes use the same sub-unit as the quote (pence for London), so they
+  // must be scaled to match the prices and intrinsic values plotted alongside.
+  const { scale } = parseQuotedCurrency(result.meta?.currency);
   const timestamps: number[] = result.timestamp ?? [];
   const closes: (number | null)[] = result.indicators?.quote?.[0]?.close ?? [];
   const prices: HistoricalPrice[] = [];
   for (let i = 0; i < timestamps.length; i++) {
-    if (closes[i] != null) prices.push({ date: timestamps[i], close: closes[i]! });
+    if (closes[i] != null) prices.push({ date: timestamps[i], close: closes[i]! * scale });
   }
   return prices;
 }

@@ -1,5 +1,6 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { Dashboard } from './pages/Dashboard';
 import { Portfolio } from './pages/Portfolio';
 import { Transactions } from './pages/Transactions';
@@ -18,6 +19,7 @@ import { SyncConflictDialog } from './components/common/SyncConflictDialog';
 export default function App() {
   useDividendSync();
   useBackfillHoldingCountries();
+  const location = useLocation();
 
   return (
     <DataSyncProvider>
@@ -26,17 +28,19 @@ export default function App() {
     <RefreshTimerProvider>
     <ExtendedHoursProvider>
       <AppLayout>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/portfolio" element={<Portfolio />} />
-          <Route path="/transactions" element={<Transactions />} />
-          <Route path="/watchlist" element={<Watchlist />} />
-          <Route path="/research" element={<Research />} />
-          <Route path="/research/:noteId" element={<Research />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/debug" element={<Debug />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        <ErrorBoundary resetKey={location.pathname}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/portfolio" element={<Portfolio />} />
+            <Route path="/transactions" element={<Transactions />} />
+            <Route path="/watchlist" element={<Watchlist />} />
+            <Route path="/research" element={<Research />} />
+            <Route path="/research/:noteId" element={<Research />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/debug" element={<Debug />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </ErrorBoundary>
       </AppLayout>
     </ExtendedHoursProvider>
     </RefreshTimerProvider>

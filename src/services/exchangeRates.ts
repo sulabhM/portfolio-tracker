@@ -26,10 +26,13 @@ async function fetchFxPairPrice(pair: string): Promise<number | null> {
 }
 
 /**
- * Returns how many USD one unit of `currency` is worth.
- * Uses Yahoo FX pairs (e.g. EURUSD=X or USDJPY=X).
+ * Returns how many USD one unit of `currency` is worth, or null when no rate
+ * could be obtained. Uses Yahoo FX pairs (e.g. EURUSD=X or USDJPY=X).
+ *
+ * Never falls back to 1: pretending a euro is a dollar silently misreports
+ * portfolio totals, which is worse than omitting the value.
  */
-export async function fetchRateToUsd(currency: string): Promise<number> {
+export async function fetchRateToUsd(currency: string): Promise<number | null> {
   const ccy = normalizeCurrencyWithDefault(currency);
   if (ccy === DEFAULT_CURRENCY) return 1;
 
@@ -53,8 +56,15 @@ export async function fetchRateToUsd(currency: string): Promise<number> {
     return rate;
   }
 
-  console.warn(`Could not fetch FX rate for ${ccy}; treating as 1:1 with USD`);
-  return 1;
+  // Serve a stale rate ahead of giving up — an hour-old EURUSD is far closer to
+  // the truth than 1.0.
+  if (cached) {
+    console.warn(`Could not refresh FX rate for ${ccy}; using stale rate`);
+    return cached.rate;
+  }
+
+  console.warn(`Could not fetch FX rate for ${ccy}`);
+  return null;
 }
 
 export async function fetchRatesToUsd(
@@ -68,14 +78,13 @@ export async function fetchRatesToUsd(
     unique
       .filter((c) => c !== DEFAULT_CURRENCY)
       .map(async (c) => {
-        rates.set(c, await fetchRateToUsd(c));
+        const rate = await fetchRateToUsd(c);
+        if (rate != null) rates.set(c, rate);
       })
   );
 
-  for (const c of unique) {
-    if (!rates.has(c)) rates.set(c, 1);
-  }
-
+  // Currencies with no rate are deliberately left absent so `toUsd` can flag
+  // them rather than converting at a made-up 1:1.
   return rates;
 }
 
@@ -83,6 +92,10 @@ export function clearExchangeRateCache(): void {
   rateCache.clear();
 }
 
+/**
+ * Convert to USD. Returns NaN when the rate is unknown so the value renders as
+ * "—" instead of silently passing through at a fabricated 1:1 rate.
+ */
 export function toUsd(
   amount: number,
   currency: string,
@@ -90,5 +103,6 @@ export function toUsd(
 ): number {
   const ccy = normalizeCurrencyWithDefault(currency);
   if (ccy === DEFAULT_CURRENCY) return amount;
-  return amount * (rates.get(ccy) ?? 1);
+  const rate = rates.get(ccy);
+  return rate == null ? NaN : amount * rate;
 }

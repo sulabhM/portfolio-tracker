@@ -113,15 +113,18 @@ export function Dashboard() {
   }, [income.total, stats.totalValue]);
 
   const allocationData: AllocationRow[] = useMemo(() => {
-    const raw: AllocationRow[] = holdings.map((h) => {
+    // Holdings whose USD value is unknown (missing FX rate) are left out of the
+    // breakdown entirely — a NaN slice would blank the whole chart.
+    const raw: AllocationRow[] = holdings.flatMap((h) => {
       const p = prices.get(h.ticker.toUpperCase());
       const ep = resolve(p, h.avgCost);
       const qCcy = quoteCurrency(p, h);
       const value = toUsd(h.shares * ep.price, qCcy, rates);
+      if (!Number.isFinite(value)) return [];
       const cost = toUsd(h.shares * h.avgCost, h.currency, rates);
       const pnl = value - cost;
       const pnlPercent = cost !== 0 ? (pnl / cost) * 100 : 0;
-      return { name: h.ticker, value, percent: 0, pnl, pnlPercent, isCash: false };
+      return [{ name: h.ticker, value, percent: 0, pnl, pnlPercent, isCash: false }];
     });
 
     if (totalCash > 0) {
@@ -148,6 +151,7 @@ export function Dashboard() {
       const ep = resolve(p, h.avgCost);
       const qCcy = quoteCurrency(p, h);
       const value = toUsd(h.shares * ep.price, qCcy, rates);
+      if (!Number.isFinite(value)) continue;
       const sector = h.sector?.trim() || 'Other';
       bySector.set(sector, (bySector.get(sector) ?? 0) + value);
     }
@@ -171,6 +175,7 @@ export function Dashboard() {
       const ep = resolve(p, h.avgCost);
       const qCcy = quoteCurrency(p, h);
       const value = toUsd(h.shares * ep.price, qCcy, rates);
+      if (!Number.isFinite(value)) continue;
       const country = (h.country ?? '').trim() || 'Other';
       byCountry.set(country, (byCountry.get(country) ?? 0) + value);
     }

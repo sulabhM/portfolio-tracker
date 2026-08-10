@@ -106,8 +106,19 @@ function assertCurrentBackupData(data: BackupData): void {
   ) {
     throw new Error('Invalid backup file: missing or malformed dataVersion.');
   }
-  if (!Array.isArray(data.tickers)) {
-    throw new Error('Invalid backup file: expected a tickers array.');
+  // Every collection is iterated unconditionally during import, so a missing
+  // key would throw a bare "cannot read properties of undefined" mid-restore,
+  // after the database has already been cleared.
+  for (const key of [
+    'tickers',
+    'transactions',
+    'notes',
+    'cashAccounts',
+    'dividendRecords',
+  ] as const) {
+    if (!Array.isArray(data[key])) {
+      throw new Error(`Invalid backup file: expected a ${key} array.`);
+    }
   }
   for (const entry of data.tickers) {
     if (!entry || typeof entry.ticker !== 'string') {

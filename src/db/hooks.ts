@@ -63,6 +63,30 @@ export function useDataVersion(): DataVersion | null {
   return useLiveQuery(async () => (await db.meta.get(DATA_VERSION_KEY)) ?? null) ?? null;
 }
 
+/**
+ * Rows written by an older schema version, or restored from a hand-edited sync
+ * file, can be missing these arrays. `useLiveQuery` rethrows during render, so
+ * an unguarded iteration blanks the entire app — normalize on the way out of
+ * the DB rather than at each call site.
+ */
+function normalizeEntry(entry: TickerEntry): TickerEntry {
+  return {
+    ...entry,
+    userTags: entry.userTags ?? [],
+    autoTags: entry.autoTags ?? [],
+    intrinsicValues: entry.intrinsicValues ?? [],
+  };
+}
+
+async function readTickers(): Promise<TickerEntry[]> {
+  return (await db.tickers.toArray()).map(normalizeEntry);
+}
+
+async function readTicker(ticker: string): Promise<TickerEntry | undefined> {
+  const entry = await db.tickers.get(ticker);
+  return entry ? normalizeEntry(entry) : undefined;
+}
+
 function toHolding(entry: TickerEntry): Holding | null {
   if (!entry.portfolio) return null;
   return {
@@ -90,7 +114,7 @@ function intrinsicId(ticker: string, date: Date): string {
 
 export function useHoldings() {
   return useLiveQuery(async () => {
-    const tickers = await db.tickers.toArray();
+    const tickers = await readTickers();
     return tickers
       .map(toHolding)
       .filter((h): h is Holding => h != null)
@@ -189,7 +213,7 @@ export async function addHolding(
 
 export async function updateHolding(id: string, changes: Partial<Holding>) {
   const ticker = id.toUpperCase();
-  const existing = await db.tickers.get(ticker);
+  const existing = await readTicker(ticker);
   if (!existing?.portfolio) return;
   const nextTicker = (changes.ticker ?? ticker).toUpperCase();
   const updated: TickerEntry = {
@@ -220,7 +244,7 @@ export async function updateHolding(id: string, changes: Partial<Holding>) {
 
 export async function deleteHolding(id: string) {
   const ticker = id.toUpperCase();
-  const existing = await db.tickers.get(ticker);
+  const existing = await readTicker(ticker);
   if (!existing) return;
   await db.tickers.put({
     ...existing,
@@ -308,7 +332,7 @@ export async function addDividendRecord(
 
 export function useWatchlist() {
   return useLiveQuery(async () => {
-    const tickers = await db.tickers.toArray();
+    const tickers = await readTickers();
     return tickers
       .map(toWatchlistItem)
       .sort((a, b) => a.ticker.localeCompare(b.ticker));
@@ -317,11 +341,11 @@ export function useWatchlist() {
 
 export function useWatchlistTags() {
   return useLiveQuery(async () => {
-    const items = await db.tickers.toArray();
+    const items = await readTickers();
     const tags = new Set<string>();
     for (const w of items) {
       for (const t of w.userTags) tags.add(t);
-      for (const t of w.autoTags ?? []) tags.add(t);
+      for (const t of w.autoTags) tags.add(t);
     }
     return Array.from(tags).sort();
   }) ?? [];
@@ -352,7 +376,7 @@ export async function updateWatchlistItem(
   changes: Partial<WatchlistItem>
 ) {
   const ticker = id.toUpperCase();
-  const existing = await db.tickers.get(ticker);
+  const existing = await readTicker(ticker);
   if (!existing) return;
   await db.tickers.put({
     ...existing,
@@ -392,7 +416,7 @@ export function useIntrinsicValues(ticker?: string) {
 
 export function useLatestIntrinsicValues() {
   return useLiveQuery(async () => {
-    const all = await db.tickers.toArray();
+    const all = await readTickers();
     const latest = new Map<string, IntrinsicValue>();
     for (const entry of all) {
       for (const iv of entry.intrinsicValues) {
@@ -444,7 +468,7 @@ export async function addIntrinsicValue(
 
 export async function deleteIntrinsicValue(id: string) {
   const [ticker, isoDate] = id.split('|');
-  const entry = await db.tickers.get(ticker);
+  const entry = await readTicker(ticker);
   if (!entry) return;
   await db.tickers.put({
     ...entry,
@@ -458,8 +482,9 @@ export async function deleteIntrinsicValue(id: string) {
 // ---- Portfolio-to-Watchlist Sync ----
 
 export async function syncPortfolioToWatchlist() {
-  await db.transaction('rw', db.tickers, async () => {
-    const entries = await db.tickers.toArray();
+  const changed = await db.transaction('rw', db.tickers, async () => {
+    const entries = (await db.tickers.toArray()).map(normalizeEntry);
+    let writes = 0;
     for (const entry of entries) {
       const hasPortfolio = !!entry.portfolio;
       const hasTag = entry.autoTags.includes(PORTFOLIO_AUTO_TAG);
@@ -467,12 +492,18 @@ export async function syncPortfolioToWatchlist() {
         await db.tickers.update(entry.ticker, {
           autoTags: [...entry.autoTags, PORTFOLIO_AUTO_TAG],
         });
+        writes++;
       } else if (!hasPortfolio && hasTag) {
         await db.tickers.update(entry.ticker, {
           autoTags: entry.autoTags.filter((t) => t !== PORTFOLIO_AUTO_TAG),
         });
+        writes++;
       }
     }
+    return writes > 0;
   });
-  await bumpDataVersion();
+  // Only bump when something actually changed: this runs on every Watchlist
+  // mount, and an unconditional bump would push a no-op version to the sync
+  // file and manufacture conflicts between devices.
+  if (changed) await bumpDataVersion();
 }

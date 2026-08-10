@@ -11,7 +11,9 @@ const config: Record<MarketState, { label: string; dot: string; text: string }> 
 
 export function MarketBadge({ state }: { state: MarketState }) {
   const { extendedHours, toggleExtendedHours } = useExtendedHours();
-  const c = config[state];
+  // Fall back rather than index blindly: an unmodelled upstream state must never
+  // take down the whole page.
+  const c = config[state] ?? config.CLOSED;
   const hasExtended = state !== 'REGULAR';
 
   return (

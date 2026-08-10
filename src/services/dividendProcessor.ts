@@ -39,6 +39,33 @@ export async function processDividends(): Promise<number> {
   return processed;
 }
 
+/**
+ * Credit a dividend to a cash account denominated in the same currency.
+ * Skips when there is no currency match: adding a EUR payout to a USD balance
+ * as a raw number would silently corrupt it, and there is no reliable
+ * historical FX rate for the ex-dividend date here.
+ */
+async function depositToCash(
+  amount: number,
+  currency: string,
+  ticker: string
+): Promise<void> {
+  const ccy = normalizeCurrencyWithDefault(currency);
+  const accounts = await db.cashAccounts.toArray();
+  const target = accounts.find(
+    (a) => a.id != null && normalizeCurrencyWithDefault(a.currency) === ccy
+  );
+
+  if (!target?.id) {
+    console.warn(
+      `Dividend for ${ticker} not deposited: no ${ccy} cash account found`
+    );
+    return;
+  }
+
+  await updateCashAccount(target.id, { balance: target.balance + amount });
+}
+
 async function processHoldingDividends(ticker: string): Promise<number> {
   const entry = await db.tickers.get(ticker.toUpperCase());
   if (!entry?.portfolio) return 0;
@@ -64,12 +91,17 @@ async function processHoldingDividends(ticker: string): Promise<number> {
   const processedDates = new Set(existing.map((r) => r.exDate));
   let count = 0;
 
+  const taxRate = holding.dividendTaxRate ?? 0;
+
   for (const event of events) {
     if (processedDates.has(event.date)) continue;
 
+    // Read from the running total, not the snapshot: a single sync can process
+    // several missed events, and each DRIP reinvestment increases the share
+    // count that the next one pays out on.
     const sharesAtTime = holding.shares;
     const grossPayout = sharesAtTime * event.amount;
-    const taxWithheld = grossPayout * (holding.dividendTaxRate ?? 0);
+    const taxWithheld = grossPayout * taxRate;
     const netPayout = grossPayout - taxWithheld;
     let reinvestedShares = 0;
 
@@ -82,21 +114,15 @@ async function processHoldingDividends(ticker: string): Promise<number> {
       const currentPrice = priceData?.price ?? holding.avgCost;
       if (quoteCcy === holdingCcy && currentPrice > 0) {
         reinvestedShares = netPayout / currentPrice;
-        await updateHolding(holding.id, {
-          shares: holding.shares + reinvestedShares,
-        });
+        holding.shares += reinvestedShares;
+        await updateHolding(holding.id, { shares: holding.shares });
       } else if (quoteCcy !== holdingCcy) {
         console.warn(
           `DRIP skipped for ${holding.ticker}: quote ${quoteCcy} vs holding ${holdingCcy}`
         );
       }
     } else if (netPayout > 0) {
-      const accounts = await db.cashAccounts.toArray();
-      if (accounts.length > 0 && accounts[0].id) {
-        await updateCashAccount(accounts[0].id, {
-          balance: accounts[0].balance + netPayout,
-        });
-      }
+      await depositToCash(netPayout, holding.currency, holding.ticker);
     }
 
     await addDividendRecord({
@@ -120,7 +146,7 @@ async function processHoldingDividends(ticker: string): Promise<number> {
       currency: holding.currency,
       date: eventDate,
       notes: holding.drip
-        ? `Auto-dividend: ${event.amount}/sh, reinvested ${reinvestedShares.toFixed(4)} shares (tax ${(holding.dividendTaxRate * 100).toFixed(0)}%)`
+        ? `Auto-dividend: ${event.amount}/sh, reinvested ${reinvestedShares.toFixed(4)} shares (tax ${(taxRate * 100).toFixed(0)}%)`
         : `Auto-dividend: ${event.amount}/sh, ${netPayout.toFixed(2)} deposited to cash`,
     });
 

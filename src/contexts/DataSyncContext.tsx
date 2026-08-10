@@ -43,6 +43,8 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [conflictPending, setConflictPending] = useState(false);
+  /** Bumped when `targetRef` gains a value asynchronously, to re-run effects. */
+  const [targetVersion, setTargetVersion] = useState(0);
   const debounceRef = useRef<number>(0);
   const targetRef = useRef<SyncFileTarget | null>(
     isTauri() ? getStoredSyncPath() : null
@@ -64,11 +66,22 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
    * would otherwise produce undefined results when overlapped.
    */
   const inFlightSyncRef = useRef<Promise<void> | null>(null);
+  /**
+   * Outbound writes are gated until we know the file isn't holding data we'd
+   * destroy. `checking` covers the window between startup and the conflict
+   * check resolving; `blocked` means a conflict exists and the user hasn't
+   * chosen a side yet. Without this, a debounced sync triggered by an early
+   * edit could overwrite a newer file before the dialog even appears.
+   */
+  const syncGateRef = useRef<'checking' | 'blocked' | 'open'>(
+    getStoredSyncPath() ? 'checking' : 'open'
+  );
 
   const performSync = useCallback(async (): Promise<void> => {
     if (inFlightSyncRef.current) return inFlightSyncRef.current;
     const target = targetRef.current;
     if (!target) return;
+    if (syncGateRef.current !== 'open') return;
 
     // Whatever was pending is being captured by this run. If a new mutation
     // arrives during the export/write, `notifyDataChanged` re-sets the flag
@@ -77,12 +90,14 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
     setSyncStatus('syncing');
     setSyncError(null);
 
+    let succeeded = false;
     const run = (async () => {
       try {
         const data = await exportAllData();
         await writeSyncFile(target, data);
         setLastSyncAt(Date.now());
         setSyncStatus('idle');
+        succeeded = true;
       } catch (e) {
         // The write didn't land — keep the pending flag so the next flush
         // (debounce tick or close-time hook) tries again.
@@ -97,6 +112,17 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
       await run;
     } finally {
       inFlightSyncRef.current = null;
+    }
+
+    // An edit that landed while this run was writing set the flag again, but
+    // its debounce had already fired and coalesced into this run — so nothing
+    // would ever pick it up. Re-arm here. Only after a successful write, or a
+    // failing write would retry in a tight loop.
+    if (succeeded && pendingSyncRef.current && !debounceRef.current) {
+      debounceRef.current = window.setTimeout(() => {
+        debounceRef.current = 0;
+        void performSync();
+      }, SYNC_DEBOUNCE_MS);
     }
   }, []);
 
@@ -227,19 +253,39 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
       setSyncHandleState(handle);
       setSyncFilePathState(handle.name);
       targetRef.current = handle;
+      // The handle arrives after first render, so the conflict-check effect
+      // has already bailed on a null target. Bump this to re-run it — without
+      // it the PWA never runs a conflict check at all.
+      setTargetVersion((v) => v + 1);
     });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const dismissConflict = useCallback(() => setConflictPending(false), []);
+  /** Allow outbound writes again, flushing anything that queued while gated. */
+  const openSyncGate = useCallback(() => {
+    syncGateRef.current = 'open';
+    if (pendingSyncRef.current) void performSync();
+  }, [performSync]);
+
+  /**
+   * Dismissing does NOT resume syncing. The conflict is still unresolved, so
+   * the next edit would otherwise overwrite a file we already know may be
+   * newer. The gate stays closed until the user picks a side.
+   */
+  const dismissConflict = useCallback(() => {
+    setConflictPending(false);
+    setSyncError('Sync paused: the sync file has changes you have not resolved.');
+    setSyncStatus('error');
+  }, []);
 
   const resolveConflict = useCallback(
     async (choice: ConflictChoice) => {
       const target = targetRef.current;
       if (!target) {
         setConflictPending(false);
+        openSyncGate();
         return;
       }
       setSyncStatus('syncing');
@@ -247,7 +293,13 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
       try {
         if (choice === 'file') {
           const data = await readSyncFile(target);
-          if (data) await importAllData(data);
+          // A null read means we could not load the file at all. Reporting
+          // success here would leave the user believing their file data was
+          // restored while the stale local DB silently stayed in place.
+          if (!data) {
+            throw new Error('Could not read the sync file.');
+          }
+          await importAllData(data);
         } else {
           const data = await exportAllData();
           await writeSyncFile(target, data);
@@ -260,54 +312,78 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
       }
       setConflictPending(false);
       setSyncStatus('idle');
+      openSyncGate();
     },
-    []
+    [openSyncGate]
   );
+
+  const runConflictCheck = useCallback(async () => {
+    const target = targetRef.current;
+    if (!target) return;
+    syncGateRef.current = 'checking';
+    try {
+      const [fileData, localVersion] = await Promise.all([
+        readSyncFile(target),
+        getDataVersion(),
+      ]);
+      if (!fileData) {
+        openSyncGate();
+        return;
+      }
+
+      // If the file is empty there is nothing to lose — the next debounced
+      // sync will overwrite it with the local DB, so we don't prompt.
+      const fileHasContent =
+        (fileData.tickers?.length ?? 0) > 0 ||
+        (fileData.notes?.length ?? 0) > 0 ||
+        (fileData.transactions?.length ?? 0) > 0 ||
+        (fileData.cashAccounts?.length ?? 0) > 0 ||
+        (fileData.dividendRecords?.length ?? 0) > 0;
+      if (!fileHasContent) {
+        openSyncGate();
+        return;
+      }
+
+      // Files written before the versioning system are treated as
+      // counter 0 so any locally-edited DB is unambiguously newer.
+      const fileVersion: BackupDataVersion = fileData.dataVersion ?? {
+        counter: 0,
+        updatedAt: new Date(0).toISOString(),
+      };
+
+      // `localVersion === null` means this DB has never recorded an edit — a
+      // fresh install or cleared IndexedDB. Its counter of 0 would compare
+      // "same" against a legacy file that has no version either, and we would
+      // then overwrite real data with an empty database. Always ask.
+      const relation = compareDataVersions(localVersion, fileVersion);
+      if (
+        localVersion === null ||
+        relation === 'file-newer' ||
+        relation === 'diverged'
+      ) {
+        syncGateRef.current = 'blocked';
+        setConflictPending(true);
+        return;
+      }
+      openSyncGate();
+    } catch (e) {
+      // We could not inspect the file, so we must not overwrite it.
+      syncGateRef.current = 'blocked';
+      setSyncError(
+        `Sync paused: could not read the sync file (${
+          e instanceof Error ? e.message : String(e)
+        }).`
+      );
+      setSyncStatus('error');
+    }
+  }, [openSyncGate]);
 
   useEffect(() => {
     if (!syncFilePath || conflictCheckedRef.current) return;
-    const target = targetRef.current;
-    if (!target) return;
+    if (!targetRef.current) return;
     conflictCheckedRef.current = true;
-    const check = async () => {
-      try {
-        const [fileData, localVersion] = await Promise.all([
-          readSyncFile(target),
-          getDataVersion(),
-        ]);
-        if (!fileData) return;
-
-        // If the file is empty there is nothing to lose — the next debounced
-        // sync will overwrite it with the local DB, so we don't prompt.
-        const fileHasContent =
-          (fileData.tickers?.length ?? 0) > 0 ||
-          (fileData.notes?.length ?? 0) > 0 ||
-          (fileData.transactions?.length ?? 0) > 0 ||
-          (fileData.cashAccounts?.length ?? 0) > 0 ||
-          (fileData.dividendRecords?.length ?? 0) > 0;
-        if (!fileHasContent) return;
-
-        // Files written before the versioning system are treated as
-        // counter 0 so any locally-edited DB is unambiguously newer.
-        const fileVersion: BackupDataVersion = fileData.dataVersion ?? {
-          counter: 0,
-          updatedAt: new Date(0).toISOString(),
-        };
-
-        // Only prompt when the file may contain data we'd lose by syncing
-        // the local DB out. If the local DB is at the same version, or
-        // strictly newer, we silently keep the IndexedDB state and let the
-        // next debounced sync flush it to the file.
-        const relation = compareDataVersions(localVersion, fileVersion);
-        if (relation === 'file-newer' || relation === 'diverged') {
-          setConflictPending(true);
-        }
-      } catch {
-        // ignore
-      }
-    };
-    check();
-  }, [syncFilePath]);
+    void runConflictCheck();
+  }, [syncFilePath, targetVersion, runConflictCheck]);
 
   const setSyncFile = useCallback(async () => {
     const picked = await pickSyncFile();
@@ -325,8 +401,12 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
       setStoredSyncHandle(null);
       setSyncHandleState(null);
     }
-    await performSync();
-  }, [performSync]);
+    // The chosen file may already hold another device's data, so inspect it
+    // before writing rather than overwriting on selection.
+    conflictCheckedRef.current = true;
+    await runConflictCheck();
+    if (syncGateRef.current === 'open') await performSync();
+  }, [performSync, runConflictCheck]);
 
   const clearSyncFile = useCallback(async () => {
     setStoredSyncPath(null);
@@ -336,6 +416,10 @@ export function DataSyncProvider({ children }: { children: ReactNode }) {
     targetRef.current = null;
     setSyncError(null);
     setSyncStatus('idle');
+    setConflictPending(false);
+    // A different file must be checked afresh.
+    conflictCheckedRef.current = false;
+    syncGateRef.current = 'open';
   }, []);
 
   const hasSyncFile = !!syncFilePath;
