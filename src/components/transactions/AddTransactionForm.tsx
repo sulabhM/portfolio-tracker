@@ -7,7 +7,7 @@ import {
 } from '../../constants/currencies';
 import { fetchTickerCurrency } from '../../services/tickerCurrency';
 import { cn } from '../../utils/format';
-import { CurrencySelect } from '../common/CurrencySelect';
+import { CurrencySelect, REPORTED_CURRENCY_HINT } from '../common/CurrencySelect';
 
 interface AddTransactionFormProps {
   onDone: () => void;
@@ -25,40 +25,44 @@ export function AddTransactionForm({
   const [price, setPrice] = useState('');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [notes, setNotes] = useState('');
+  // Manual pick — only used when the ticker isn't a holding and Yahoo doesn't
+  // report a currency for it.
   const [currency, setCurrency] = useState<CurrencyCode>(DEFAULT_CURRENCY);
+  // Yahoo-reported currency for a non-holding ticker, keyed by the ticker it was
+  // fetched for so a stale result never applies to a newly typed ticker.
+  const [reported, setReported] = useState<{ ticker: string; currency: CurrencyCode } | null>(
+    null
+  );
   const currencyLookupRef = useRef(0);
 
-  const matchedHolding = holdings.find(
-    (h) => h.ticker.toUpperCase() === ticker.toUpperCase()
-  );
+  const tickerKey = ticker.toUpperCase().trim();
+  const matchedHolding = holdings.find((h) => h.ticker.toUpperCase() === tickerKey);
+  const hasMatchedHolding = !!matchedHolding;
+  const reportedCurrency =
+    !hasMatchedHolding && reported && reported.ticker === tickerKey ? reported.currency : null;
 
   useEffect(() => {
-    if (matchedHolding || !ticker.trim()) return;
+    if (hasMatchedHolding || !tickerKey) return;
 
     const id = ++currencyLookupRef.current;
+    // The prefilled ticker is looked up immediately; typed tickers are debounced.
+    const delay = tickerKey === defaultTicker?.toUpperCase().trim() ? 0 : 500;
     const timer = window.setTimeout(async () => {
-      const reported = await fetchTickerCurrency(ticker);
-      if (reported && id === currencyLookupRef.current) {
-        setCurrency(reported);
+      const currency = await fetchTickerCurrency(tickerKey);
+      if (currency && id === currencyLookupRef.current) {
+        setReported({ ticker: tickerKey, currency });
       }
-    }, 500);
+    }, delay);
 
     return () => clearTimeout(timer);
-  }, [ticker, matchedHolding]);
-
-  useEffect(() => {
-    if (defaultTicker && !matchedHolding) {
-      fetchTickerCurrency(defaultTicker).then((reported) => {
-        if (reported) setCurrency(reported);
-      });
-    }
-  }, [defaultTicker, matchedHolding]);
+  }, [tickerKey, defaultTicker, hasMatchedHolding]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    // Holding currency > Yahoo-reported currency > manual pick.
     const txCurrency = matchedHolding
       ? normalizeCurrencyWithDefault(matchedHolding.currency)
-      : (await fetchTickerCurrency(ticker)) ?? currency;
+      : reportedCurrency ?? (await fetchTickerCurrency(ticker)) ?? currency;
     await addTransaction({
       holdingId: matchedHolding?.id,
       ticker: ticker.toUpperCase().trim(),
@@ -170,8 +174,14 @@ export function AddTransactionForm({
           <CurrencySelect
             value={currency}
             onChange={setCurrency}
+            reported={reportedCurrency}
             className={inputClass}
           />
+          {reportedCurrency && (
+            <p className="text-xs text-gray-500 dark:text-slate-400 mt-1">
+              {REPORTED_CURRENCY_HINT}
+            </p>
+          )}
         </div>
       )}
       <div>

@@ -24,6 +24,10 @@ log = "0.4"
 tauri = { version = "2.11.0", features = [] }
 tauri-plugin-log = "2.8.0"
 tauri-plugin-fs = "2.5.1"
+# Remembers fs scopes granted through the dialog plugin (e.g. the user-chosen
+# sync folder) across launches, so the capability file doesn't need a blanket
+# "**" filesystem scope.
+tauri-plugin-persisted-scope = "2.3"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-http = { version = "2.5.9", features = ["unsafe-headers", "cookies"] }
 tauri-plugin-opener = "2.5.4"

@@ -1,7 +1,4 @@
 import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Underline from '@tiptap/extension-underline';
-import Highlight from '@tiptap/extension-highlight';
 import Placeholder from '@tiptap/extension-placeholder';
 import {
   Bold,
@@ -22,6 +19,7 @@ import { useHoldings, updateNote, deleteNote } from '../../db/hooks';
 import type { Note } from '../../types';
 import { cn } from '../../utils/format';
 import { confirmBeforeDelete } from '../../utils/confirmBeforeDelete';
+import { NOTE_EXTENSIONS } from '../../utils/noteHtml';
 
 interface NoteEditorProps {
   note: Note;
@@ -39,19 +37,29 @@ export function NoteEditor({ note, onBack }: NoteEditorProps) {
   const [tagInput, setTagInput] = useState('');
   const holdings = useHoldings();
   const saveTimeout = useRef<number>(0);
+  /**
+   * Fields changed since the last write. Each `scheduleSave` call used to
+   * replace the previous partial outright, so editing the title and then the
+   * body within the debounce window silently dropped the title change. Merge
+   * instead, and flush everything accumulated in one write.
+   */
+  const pendingRef = useRef<Partial<Note>>({});
 
   const scheduleSave = useCallback((partial: Partial<Note>) => {
+    pendingRef.current = { ...pendingRef.current, ...partial };
     clearTimeout(saveTimeout.current);
     saveTimeout.current = window.setTimeout(async () => {
-      if (note.id) await updateNote(note.id, partial);
+      const changes = pendingRef.current;
+      pendingRef.current = {};
+      if (note.id && Object.keys(changes).length > 0) {
+        await updateNote(note.id, changes);
+      }
     }, 600);
   }, [note.id]);
 
   const editor = useEditor({
     extensions: [
-      StarterKit,
-      Underline,
-      Highlight,
+      ...NOTE_EXTENSIONS,
       Placeholder.configure({
         placeholder: 'Start writing your research notes...',
       }),
@@ -62,21 +70,34 @@ export function NoteEditor({ note, onBack }: NoteEditorProps) {
     },
   });
 
+  // Only persist fields that actually differ from the stored note. Without
+  // these guards every note open wrote the (unchanged) note back, bumping the
+  // data version and triggering a file sync — and with several devices that
+  // manufactured spurious sync conflicts.
   useEffect(() => {
-    scheduleSave({ title });
-  }, [scheduleSave, title]);
+    if (title !== note.title) scheduleSave({ title });
+  }, [scheduleSave, title, note.title]);
 
   useEffect(() => {
-    scheduleSave({ tags });
-  }, [scheduleSave, tags]);
+    if (!sameStrings(tags, note.tags)) scheduleSave({ tags });
+  }, [scheduleSave, tags, note.tags]);
 
   useEffect(() => {
-    scheduleSave({ tickerLinks });
-  }, [scheduleSave, tickerLinks]);
+    if (!sameStrings(tickerLinks, note.tickerLinks)) scheduleSave({ tickerLinks });
+  }, [scheduleSave, tickerLinks, note.tickerLinks]);
 
+  // Flush anything still pending when the editor unmounts (navigating away
+  // inside the debounce window) instead of discarding it.
   useEffect(() => {
-    return () => clearTimeout(saveTimeout.current);
-  }, []);
+    return () => {
+      clearTimeout(saveTimeout.current);
+      const changes = pendingRef.current;
+      pendingRef.current = {};
+      if (note.id && Object.keys(changes).length > 0) {
+        void updateNote(note.id, changes);
+      }
+    };
+  }, [note.id]);
 
   function handleTagKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' || e.key === ',') {
@@ -299,6 +320,10 @@ export function NoteEditor({ note, onBack }: NoteEditorProps) {
       </div>
     </div>
   );
+}
+
+function sameStrings(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 function Btn({

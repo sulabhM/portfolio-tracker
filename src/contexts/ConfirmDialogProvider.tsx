@@ -1,18 +1,23 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Modal } from '../components/common/Modal';
-import { setConfirmDialogImpl } from '../utils/confirmBridge';
+import { setConfirmDialogImpl, type ConfirmOptions } from '../utils/confirmBridge';
 
 export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState('');
+  const [confirmLabel, setConfirmLabel] = useState('Delete');
   const resolverRef = useRef<((ok: boolean) => void) | null>(null);
 
   useEffect(() => {
     setConfirmDialogImpl(
-      (msg: string) =>
+      (msg: string, options?: ConfirmOptions) =>
         new Promise<boolean>((resolve) => {
+          // A second request while one is open would orphan the first
+          // promise; settle it as "cancelled" instead of leaving it hanging.
+          resolverRef.current?.(false);
           resolverRef.current = resolve;
           setMessage(msg);
+          setConfirmLabel(options?.confirmLabel ?? 'Delete');
           setOpen(true);
         })
     );
@@ -51,7 +56,7 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
             onClick={() => finish(true)}
             className="px-4 py-2 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors"
           >
-            Delete
+            {confirmLabel}
           </button>
         </div>
       </Modal>

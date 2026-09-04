@@ -55,7 +55,12 @@ export function RefreshTimerProvider({ children }: { children: ReactNode }) {
     loadingRef.current = true;
     setLoading(true);
     try {
-      await Promise.all(fns.map((fn) => fn()));
+      // One page's refresh failing (e.g. Yahoo 429) must not abort the others
+      // or bubble out of the timer callback.
+      const results = await Promise.allSettled(fns.map((fn) => fn()));
+      for (const r of results) {
+        if (r.status === 'rejected') console.warn('Refresh callback failed:', r.reason);
+      }
     } finally {
       loadingRef.current = false;
       setLoading(false);
@@ -75,8 +80,13 @@ export function RefreshTimerProvider({ children }: { children: ReactNode }) {
     if (loadingRef.current) return;
     if (Date.now() - lastRefreshRef.current < COOLDOWN) return;
     clearInterval(autoRef.current);
-    await doRefresh();
-    autoRef.current = setInterval(doRefresh, AUTO_INTERVAL);
+    try {
+      await doRefresh();
+    } finally {
+      // Always re-arm: an exception here used to leave auto-refresh disabled
+      // for the rest of the session.
+      autoRef.current = setInterval(doRefresh, AUTO_INTERVAL);
+    }
   }, [doRefresh]);
 
   const registerRefresh = useCallback(

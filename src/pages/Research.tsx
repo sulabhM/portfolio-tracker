@@ -17,7 +17,10 @@ export function Research() {
   const notes = useNotes(selectedTag);
   const allTags = useAllTags();
   const watchlist = useWatchlist();
-  const editingNote = useNote(noteId ? parseInt(noteId) : undefined);
+  // `db.notes.get(NaN)` throws inside the live query and takes down the page
+  // via the ErrorBoundary; treat a non-numeric route param as "no note".
+  const parsedNoteId = noteId != null ? Number(noteId) : NaN;
+  const editingNote = useNote(Number.isInteger(parsedNoteId) ? parsedNoteId : undefined);
 
   async function handleNewNote() {
     const id = await addNote({
@@ -30,6 +33,13 @@ export function Research() {
   }
 
   if (noteId) {
+    if (!Number.isInteger(parsedNoteId)) {
+      return (
+        <div className="text-center py-16 text-gray-500 dark:text-slate-400">
+          Note not found.
+        </div>
+      );
+    }
     if (!editingNote) {
       return (
         <div className="text-center py-16 text-gray-500 dark:text-slate-400">
@@ -96,9 +106,9 @@ export function Research() {
                       No tickers in watchlist
                     </p>
                   ) : (
-                    watchlist
-                      .sort((a, b) => a.ticker.localeCompare(b.ticker))
-                      .map((w) => (
+                    // useWatchlist() already returns rows sorted by ticker; do not
+                    // sort in place — that mutates the live-query result during render.
+                    watchlist.map((w) => (
                         <button
                           key={w.id}
                           onClick={() => {

@@ -83,16 +83,26 @@ export async function pickOpenSyncFile(): Promise<PickedSyncFile | null> {
   return null;
 }
 
+/**
+ * Read the sync file. Resolves `null` only when the file does not exist yet
+ * (or cannot be parsed); any other failure — most importantly a scope /
+ * permission error — is thrown. Callers treat `null` as "nothing to lose" and
+ * proceed to overwrite, so an unreadable file must never be reported as absent.
+ */
 export async function readSyncFile(target: SyncFileTarget): Promise<BackupData | null> {
   let json: string;
 
   if (typeof target === 'string') {
     if (isTauri()) {
+      const { exists, readTextFile } = await import('@tauri-apps/plugin-fs');
+      if (!(await exists(target))) return null;
       try {
-        const { readTextFile } = await import('@tauri-apps/plugin-fs');
         json = await readTextFile(target);
-      } catch {
-        return null;
+      } catch (e) {
+        throw new Error(
+          `Could not read the sync file. If it lives outside your home folder, ` +
+            `re-select the folder in Settings to grant access. (${e instanceof Error ? e.message : String(e)})`
+        );
       }
     } else {
       return null;
@@ -141,15 +151,45 @@ export async function writeSyncFile(target: SyncFileTarget, data: BackupData): P
   }
 }
 
-/** Fallback for PWA when File System Access API is not available: trigger download of JSON. */
-export function downloadBackup(data: BackupData, filename: string = SYNC_FILE_NAME): void {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+/**
+ * Save a manual backup.
+ *
+ * Tauri: the webview has no download handler, so an `<a download>` click is a
+ * silent no-op there. Use the native save dialog and write the file directly.
+ * Web/PWA: trigger a browser download.
+ *
+ * Resolves to `true` if a file was written/downloaded, `false` if the user
+ * cancelled the dialog.
+ */
+export async function exportBackup(
+  data: BackupData,
+  filename: string = SYNC_FILE_NAME
+): Promise<boolean> {
+  const json = JSON.stringify(data, null, 2);
+
+  if (isTauri()) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+    const path = await save({
+      defaultPath: filename,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      title: 'Export backup',
+    });
+    if (!path) return false;
+    await writeTextFile(path, json);
+    return true;
+  }
+
+  const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
   a.click();
-  URL.revokeObjectURL(url);
+  // Revoke after the click has been dispatched; revoking synchronously can
+  // cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
 }
 
 /** Parse an uploaded File into BackupData. Used with <input type="file" /> for import. */

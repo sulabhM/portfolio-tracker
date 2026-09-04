@@ -35,6 +35,8 @@ export function TickerSearchInput({
   const [open, setOpen] = useState(false);
   const debounceRef = useRef<number>(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  /** Monotonic id so a slow, older search can't overwrite a newer result set. */
+  const searchSeqRef = useRef(0);
 
   const runSearch = useCallback(async (query: string) => {
     const q = query.trim();
@@ -43,13 +45,15 @@ export function TickerSearchInput({
       setOpen(false);
       return;
     }
+    const seq = ++searchSeqRef.current;
     setSearching(true);
     try {
       const results = await searchTickers(q);
+      if (seq !== searchSeqRef.current) return;
       setSearchResults(results);
       setOpen(results.length > 0);
     } finally {
-      setSearching(false);
+      if (seq === searchSeqRef.current) setSearching(false);
     }
   }, []);
 

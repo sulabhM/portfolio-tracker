@@ -6,13 +6,14 @@ import { isTauri } from '../../services/fileAdapter';
 import type { Holding } from '../../types';
 import {
   DEFAULT_CURRENCY,
+  normalizeCurrency,
   normalizeCurrencyWithDefault,
   type CurrencyCode,
 } from '../../constants/currencies';
 import { fetchTickerCurrency } from '../../services/tickerCurrency';
 import { cn } from '../../utils/format';
 import { TickerSearchInput } from '../common/TickerSearchInput';
-import { CurrencySelect } from '../common/CurrencySelect';
+import { CurrencySelect, REPORTED_CURRENCY_HINT } from '../common/CurrencySelect';
 
 interface AddHoldingFormProps {
   holding?: Holding;
@@ -24,11 +25,24 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
   const [name, setName] = useState(holding?.name ?? '');
   const [shares, setShares] = useState(holding?.shares?.toString() ?? '');
   const [avgCost, setAvgCost] = useState(holding?.avgCost?.toString() ?? '');
+  // Manual pick — only used when Yahoo doesn't report a currency for the ticker.
   const [currency, setCurrency] = useState<CurrencyCode>(
     holding
       ? normalizeCurrencyWithDefault(holding.currency)
       : DEFAULT_CURRENCY
   );
+  // Yahoo-reported currency, keyed by the ticker it was fetched for so a stale
+  // lookup never applies to a newly typed ticker. When known it wins over the
+  // manual pick (both in the UI, where the select is locked, and on save).
+  const [reported, setReported] = useState<{ ticker: string; currency: CurrencyCode } | null>(
+    null
+  );
+  const tickerKey = ticker.trim().toUpperCase();
+  const reportedCurrency =
+    reported && reported.ticker === tickerKey ? reported.currency : null;
+  const setReportedFor = (forTicker: string, currency: CurrencyCode | undefined) => {
+    if (currency) setReported({ ticker: forTicker.trim().toUpperCase(), currency });
+  };
   const [sector, setSector] = useState(holding?.sector ?? '');
   const [country, setCountry] = useState(holding?.country ?? '');
   const [drip, setDrip] = useState(holding?.drip ?? false);
@@ -43,6 +57,22 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
   const lookupTimeout = useRef<number>(0);
 
   const isEditing = !!holding;
+
+  // When editing, the ticker is fixed: just find out what Yahoo reports so the
+  // currency select reflects what will actually be saved.
+  const editingTicker = holding?.ticker;
+  useEffect(() => {
+    if (!editingTicker) return;
+    let cancelled = false;
+    fetchTickerCurrency(editingTicker).then((currency) => {
+      if (!cancelled && currency) {
+        setReported({ ticker: editingTicker.trim().toUpperCase(), currency });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [editingTicker]);
 
   useEffect(() => {
     if (isEditing) return;
@@ -59,7 +89,7 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
         setName(info.name);
         setSector(info.sector);
         setCountry(info.country || '');
-        setCurrency(normalizeCurrencyWithDefault(info.currency));
+        setReportedFor(raw, normalizeCurrency(info.currency));
         setLookupState('found');
       } else {
         setLookupState('notfound');
@@ -71,8 +101,10 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    // Yahoo's reported currency wins when it reports one; the manual pick is
+    // the fallback for tickers Yahoo doesn't know.
     const reported =
-      (await fetchTickerCurrency(ticker)) ?? currency;
+      reportedCurrency ?? (await fetchTickerCurrency(ticker)) ?? currency;
     const data = {
       ticker: ticker.toUpperCase().trim(),
       name: name.trim(),
@@ -112,8 +144,7 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
               setTicker(symbol);
               setName(companyName);
               if (!isEditing) {
-                const reported = await fetchTickerCurrency(symbol);
-                if (reported) setCurrency(reported);
+                setReportedFor(symbol, await fetchTickerCurrency(symbol));
               }
             }}
             placeholder="Search by ticker or company name (e.g. AAPL or Apple)"
@@ -208,8 +239,14 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
           <CurrencySelect
             value={currency}
             onChange={setCurrency}
+            reported={reportedCurrency}
             className={inputClass}
           />
+          {reportedCurrency && (
+            <p className="text-xs text-gray-500 dark:text-slate-400 mt-1">
+              {REPORTED_CURRENCY_HINT}
+            </p>
+          )}
         </div>
       </div>
 

@@ -22,6 +22,7 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "fs:default",
+    "fs:allow-exists",
     "fs:allow-read-text-file",
     "fs:allow-write-text-file",
     "fs:allow-rename",
@@ -34,8 +35,7 @@
         { "path": "$DOCUMENT/**" },
         { "path": "$DOWNLOAD/**" },
         { "path": "$DESKTOP/**" },
-        { "path": "$DATA/**" },
-        { "path": "**" }
+        { "path": "$DATA/**" }
       ]
     }
   ]

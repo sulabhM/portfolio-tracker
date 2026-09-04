@@ -1,7 +1,8 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useDataSync } from '../contexts/dataSyncContextValue';
 import { exportAllData, importAllData } from '../services/dataSync';
-import { downloadBackup, parseBackupFile, isTauri } from '../services/fileAdapter';
+import { exportBackup, parseBackupFile, isTauri } from '../services/fileAdapter';
+import { requestConfirm } from '../utils/confirmBridge';
 import { cn } from '../utils/format';
 
 export function Settings() {
@@ -16,10 +17,22 @@ export function Settings() {
     hasSyncFile,
   } = useDataSync();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [backupMessage, setBackupMessage] = useState<
+    { kind: 'ok' | 'error'; text: string } | null
+  >(null);
 
   const handleExport = async () => {
-    const data = await exportAllData();
-    downloadBackup(data);
+    setBackupMessage(null);
+    try {
+      const data = await exportAllData();
+      const written = await exportBackup(data);
+      if (written) setBackupMessage({ kind: 'ok', text: 'Backup exported.' });
+    } catch (err) {
+      setBackupMessage({
+        kind: 'error',
+        text: 'Export failed: ' + (err instanceof Error ? err.message : String(err)),
+      });
+    }
   };
 
   const handleImportClick = () => {
@@ -30,13 +43,23 @@ export function Settings() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    if (!window.confirm('Import will replace all current data. Continue?')) return;
+    setBackupMessage(null);
+    // window.confirm/alert are unreliable inside WebViews; use the in-app dialog.
+    const ok = await requestConfirm(
+      'Import will replace all current data. Continue?',
+      { confirmLabel: 'Replace data' }
+    );
+    if (!ok) return;
     try {
       const data = await parseBackupFile(file);
       await importAllData(data);
       if (hasSyncFile) await requestSync();
+      setBackupMessage({ kind: 'ok', text: 'Backup imported.' });
     } catch (err) {
-      window.alert('Import failed: ' + (err instanceof Error ? err.message : String(err)));
+      setBackupMessage({
+        kind: 'error',
+        text: 'Import failed: ' + (err instanceof Error ? err.message : String(err)),
+      });
     }
   };
 
@@ -154,8 +177,21 @@ export function Settings() {
               />
             </div>
             <p className="text-xs text-gray-500 dark:text-slate-500 mt-1">
-              Export downloads a JSON file. Import replaces all data with the selected file.
+              Export {isTauri() ? 'saves' : 'downloads'} a JSON file. Import replaces all data with the selected file.
             </p>
+            {backupMessage && (
+              <p
+                role={backupMessage.kind === 'error' ? 'alert' : 'status'}
+                className={cn(
+                  'text-sm mt-2',
+                  backupMessage.kind === 'error'
+                    ? 'text-red-600 dark:text-red-400'
+                    : 'text-emerald-600 dark:text-emerald-400'
+                )}
+              >
+                {backupMessage.text}
+              </p>
+            )}
           </div>
         </div>
       </section>

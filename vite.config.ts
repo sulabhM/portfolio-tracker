@@ -50,10 +50,14 @@ function yahooFinanceProxy(): Plugin {
     };
   }
 
+  // The app is always same-origin with the dev server (browser dev and
+  // `tauri dev` both load from devUrl), so no CORS header is needed. Emitting
+  // `Access-Control-Allow-Origin: *` while listening on all interfaces
+  // (`server.host: true`) turned the dev server into an open Yahoo proxy for
+  // any page on the LAN.
   function sendJson(res: ServerResponse, status: number, contentType: string, body: string) {
     res.statusCode = status;
     res.setHeader('Content-Type', contentType);
-    res.setHeader('Access-Control-Allow-Origin', '*');
     res.end(body);
   }
 

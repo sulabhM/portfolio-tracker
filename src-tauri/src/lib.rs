@@ -4,6 +4,8 @@ mod yahoo;
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_fs::init())
+    // Must be registered after `fs` so it can restore the saved scope into it.
+    .plugin(tauri_plugin_persisted_scope::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_http::init())
     .plugin(tauri_plugin_opener::init())

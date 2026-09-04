@@ -15,7 +15,8 @@ import {
 } from 'lucide-react';
 import { fetchTickerProfile } from '../../services/yahooFinance';
 import type { TickerProfile } from '../../services/yahooFinance';
-import { formatCurrency, cn } from '../../utils/format';
+import { formatMoney, cn } from '../../utils/format';
+import { openExternalUrl, toSafeHttpUrl } from '../../services/openExternal';
 
 export function TickerDetailView({ ticker }: { ticker: string }) {
   const [profile, setProfile] = useState<TickerProfile | null>(null);
@@ -61,6 +62,7 @@ export function TickerDetailView({ ticker }: { ticker: string }) {
   }
 
   const positive = profile.change >= 0;
+  const websiteUrl = toSafeHttpUrl(profile.website);
 
   return (
     <div className="space-y-5">
@@ -95,23 +97,22 @@ export function TickerDetailView({ ticker }: { ticker: string }) {
                   {profile.employees.toLocaleString()}
                 </span>
               )}
-              {profile.website && (
-                <a
-                  href={profile.website}
-                  target="_blank"
-                  rel="noreferrer"
+              {websiteUrl && (
+                <button
+                  type="button"
+                  onClick={() => void openExternalUrl(websiteUrl)}
                   className="flex items-center gap-1 text-indigo-500 hover:underline"
                 >
                   <Globe size={12} />
                   Website
                   <ExternalLink size={10} />
-                </a>
+                </button>
               )}
             </div>
           </div>
           <div className="text-right shrink-0">
             <p className="text-3xl font-bold text-gray-900 dark:text-white tabular-nums">
-              {formatCurrency(profile.price)}
+              {formatMoney(profile.price, profile.currency)}
             </p>
             <p
               className={cn(
@@ -120,11 +121,12 @@ export function TickerDetailView({ ticker }: { ticker: string }) {
               )}
             >
               {positive ? '+' : ''}
-              {formatCurrency(profile.change)} ({positive ? '+' : ''}
+              {formatMoney(profile.change, profile.currency)} ({positive ? '+' : ''}
               {profile.changePercent.toFixed(2)}%)
             </p>
             <p className="text-xs text-gray-500 dark:text-slate-400 mt-1">
-              Day: {formatCurrency(profile.dayLow)} – {formatCurrency(profile.dayHigh)}
+              Day: {formatMoney(profile.dayLow, profile.currency)} –{' '}
+              {formatMoney(profile.dayHigh, profile.currency)}
             </p>
           </div>
         </div>
@@ -237,8 +239,8 @@ export function TickerDetailView({ ticker }: { ticker: string }) {
             positive ? <TrendingUp size={16} /> : <TrendingDown size={16} />
           }
           items={[
-            ['52w Low', formatCurrency(profile.fiftyTwoWeekLow)],
-            ['52w High', formatCurrency(profile.fiftyTwoWeekHigh)],
+            ['52w Low', formatMoney(profile.fiftyTwoWeekLow, profile.currency)],
+            ['52w High', formatMoney(profile.fiftyTwoWeekHigh, profile.currency)],
             ['52w Change', profile.fiftyTwoWeekChange],
             ['Beta', profile.beta],
             ['Volume', profile.volume],

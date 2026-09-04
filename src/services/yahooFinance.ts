@@ -773,6 +773,8 @@ export interface TickerProfile {
   // Overview
   ticker: string;
   name: string;
+  /** Quote currency (ISO 4217, major unit) for the numeric price fields. */
+  currency: string;
   exchange: string;
   sector: string;
   industry: string;
@@ -865,8 +867,11 @@ export async function fetchTickerProfile(
     const ks = r.defaultKeyStatistics ?? {};
     const ce = r.calendarEvents ?? {};
 
-    const mktPrice = raw(p.regularMarketPrice);
-    const prevClose = raw(p.regularMarketPreviousClose) || mktPrice;
+    // Same sub-unit handling as fetchPrice/fetchTickerSummary: London quotes
+    // arrive in pence and every price-like field must be scaled to pounds.
+    const { code: quoteCcy, scale } = parseQuoteUnit(p);
+    const mktPrice = raw(p.regularMarketPrice) * scale;
+    const prevClose = raw(p.regularMarketPreviousClose) * scale || mktPrice;
     const chg = mktPrice - prevClose;
     const chgPct = prevClose ? (chg / prevClose) * 100 : 0;
     const { annualRate, yieldPercent } = parseDividendMetrics(sd, mktPrice);
@@ -874,6 +879,7 @@ export async function fetchTickerProfile(
     return {
       ticker: key,
       name: p.longName ?? p.shortName ?? key,
+      currency: quoteCcy,
       exchange: p.exchangeName ?? '',
       sector: ap.sector ?? '',
       industry: ap.industry ?? '',
@@ -884,10 +890,10 @@ export async function fetchTickerProfile(
       price: mktPrice,
       change: chg,
       changePercent: chgPct,
-      dayLow: raw(sd.dayLow),
-      dayHigh: raw(sd.dayHigh),
-      fiftyTwoWeekLow: raw(sd.fiftyTwoWeekLow),
-      fiftyTwoWeekHigh: raw(sd.fiftyTwoWeekHigh),
+      dayLow: raw(sd.dayLow) * scale,
+      dayHigh: raw(sd.dayHigh) * scale,
+      fiftyTwoWeekLow: raw(sd.fiftyTwoWeekLow) * scale,
+      fiftyTwoWeekHigh: raw(sd.fiftyTwoWeekHigh) * scale,
       volume: fmt(sd.volume),
       avgVolume: fmt(sd.averageVolume),
       marketCap: fmt(sd.marketCap),

@@ -14,10 +14,18 @@ const DELAY_MS = 800;
 export function useBackfillHoldingCountries() {
   const holdings = useHoldings();
   const backfillingRef = useRef(false);
+  /**
+   * Tickers already looked up this session. A USD holding whose currency
+   * Yahoo confirms as USD never gets "fixed", so without this it was queried
+   * again on every holdings change (each DRIP update, each edit, …) — one
+   * quoteSummary round-trip per holding, every time.
+   */
+  const checkedRef = useRef(new Set<string>());
 
   useEffect(() => {
     const needBackfill = holdings.filter((h) => {
       if (h.id == null) return false;
+      if (checkedRef.current.has(h.ticker.toUpperCase())) return false;
       const needsCountry = !(h.country ?? '').trim();
       const needsCurrency =
         !(h.currency ?? '').trim() ||
@@ -30,6 +38,7 @@ export function useBackfillHoldingCountries() {
 
     (async () => {
       for (const h of needBackfill) {
+        checkedRef.current.add(h.ticker.toUpperCase());
         try {
           const info = await lookupTicker(h.ticker);
           const updates: { country?: string; currency?: string } = {};

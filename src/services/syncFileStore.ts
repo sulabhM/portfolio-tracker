@@ -15,7 +15,10 @@ export function setStoredSyncPath(path: string | null): void {
 
 function openSyncDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    if (typeof indexedDB === 'undefined') reject(new Error('IndexedDB not available'));
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB not available'));
+      return;
+    }
     const req = indexedDB.open(IDB_NAME, 1);
     req.onerror = () => reject(req.error);
     req.onsuccess = () => resolve(req.result);

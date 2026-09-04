@@ -174,6 +174,28 @@ export function useCashAccounts() {
 
 // ---- Holding CRUD ----
 
+const PORTFOLIO_FIELDS = [
+  'shares',
+  'avgCost',
+  'currency',
+  'sector',
+  'country',
+  'drip',
+  'dividendTaxRate',
+  'addedDate',
+] as const satisfies readonly (keyof TickerPortfolioInfo)[];
+
+function pickPortfolioFields(changes: Partial<Holding>): Partial<TickerPortfolioInfo> {
+  const out: Partial<TickerPortfolioInfo> = {};
+  for (const key of PORTFOLIO_FIELDS) {
+    const value = changes[key];
+    if (value !== undefined) {
+      (out as Record<string, unknown>)[key] = value;
+    }
+  }
+  return out;
+}
+
 export async function addHolding(
   holding: Omit<Holding, 'id' | 'createdAt' | 'updatedAt'>
 ) {
@@ -216,13 +238,17 @@ export async function updateHolding(id: string, changes: Partial<Holding>) {
   const existing = await readTicker(ticker);
   if (!existing?.portfolio) return;
   const nextTicker = (changes.ticker ?? ticker).toUpperCase();
+  // `Holding` is a flattened view (ticker/name/id + portfolio fields). Only the
+  // portfolio fields belong inside `portfolio`; spreading the whole change set
+  // used to persist `id`, `ticker` and `name` into it (and into the sync file).
+  const portfolioChanges = pickPortfolioFields(changes);
   const updated: TickerEntry = {
     ...existing,
     ticker: nextTicker,
     name: changes.name ?? existing.name,
     portfolio: {
       ...existing.portfolio,
-      ...changes,
+      ...portfolioChanges,
       currency: changes.currency ?? existing.portfolio.currency,
       addedDate: changes.addedDate ?? existing.portfolio.addedDate,
       updatedAt: new Date(),
@@ -389,8 +415,42 @@ export async function updateWatchlistItem(
   await bumpDataVersion();
 }
 
+/**
+ * Replace a ticker's auto-generated tags.
+ *
+ * Auto-tags are derived from Yahoo data and portfolio membership and are
+ * recomputed on every refresh on every device. They are deliberately written
+ * WITHOUT bumping the data version: bumping meant two devices refreshing at
+ * different times produced different counters for identical user data and
+ * the sync dialog reported a conflict on every launch.
+ */
+export async function setWatchlistAutoTags(id: string, autoTags: string[]) {
+  const ticker = id.toUpperCase();
+  const existing = await readTicker(ticker);
+  if (!existing) return;
+  if (sameStringSet(existing.autoTags, autoTags)) return;
+  await db.tickers.update(ticker, { autoTags: [...new Set(autoTags)] });
+}
+
+function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((t) => set.has(t));
+}
+
 export async function deleteWatchlistItem(id: string) {
-  await db.tickers.delete(id.toUpperCase());
+  const ticker = id.toUpperCase();
+  const existing = await db.tickers.get(ticker);
+  if (!existing) return;
+  // Every held ticker is on the watchlist by construction; the row also
+  // carries the position. Removing it here would silently delete the holding
+  // — the UI hides the button for held tickers, but guard the data layer too.
+  if (existing.portfolio) {
+    throw new Error(
+      `${ticker} is in your portfolio. Remove the holding first.`
+    );
+  }
+  await db.tickers.delete(ticker);
   await bumpDataVersion();
 }
 
@@ -481,10 +541,15 @@ export async function deleteIntrinsicValue(id: string) {
 
 // ---- Portfolio-to-Watchlist Sync ----
 
+/**
+ * Repair pass: make the `portfolio` auto-tag match whether the ticker actually
+ * has a position. `addHolding`/`deleteHolding` already maintain the tag (and
+ * bump the version for the underlying edit); this only fixes drift, and like
+ * all auto-tag writes it does not bump the data version.
+ */
 export async function syncPortfolioToWatchlist() {
-  const changed = await db.transaction('rw', db.tickers, async () => {
+  await db.transaction('rw', db.tickers, async () => {
     const entries = (await db.tickers.toArray()).map(normalizeEntry);
-    let writes = 0;
     for (const entry of entries) {
       const hasPortfolio = !!entry.portfolio;
       const hasTag = entry.autoTags.includes(PORTFOLIO_AUTO_TAG);
@@ -492,18 +557,11 @@ export async function syncPortfolioToWatchlist() {
         await db.tickers.update(entry.ticker, {
           autoTags: [...entry.autoTags, PORTFOLIO_AUTO_TAG],
         });
-        writes++;
       } else if (!hasPortfolio && hasTag) {
         await db.tickers.update(entry.ticker, {
           autoTags: entry.autoTags.filter((t) => t !== PORTFOLIO_AUTO_TAG),
         });
-        writes++;
       }
     }
-    return writes > 0;
   });
-  // Only bump when something actually changed: this runs on every Watchlist
-  // mount, and an unconditional bump would push a no-op version to the sync
-  // file and manufacture conflicts between devices.
-  if (changed) await bumpDataVersion();
 }

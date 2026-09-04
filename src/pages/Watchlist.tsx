@@ -29,6 +29,7 @@ import {
   useNotes,
   addWatchlistItem,
   updateWatchlistItem,
+  setWatchlistAutoTags,
   deleteWatchlistItem,
   addIntrinsicValue,
   deleteIntrinsicValue,
@@ -50,6 +51,7 @@ import {
 } from '../constants/currencies';
 import { CurrencySelect } from '../components/common/CurrencySelect';
 import { confirmBeforeDelete } from '../utils/confirmBeforeDelete';
+import { sanitizeNoteHtml } from '../utils/noteHtml';
 
 import {
   RECOMMENDATION_TAGS,
@@ -129,44 +131,25 @@ export function Watchlist() {
 
   useRegisterRefresh('watchlist-summaries', fetchAll);
 
-  // Sync "dividend" auto-tag when summary data is available (re-checked on each load/refresh).
+  // Recompute the Yahoo-derived auto-tags ("dividend" + recommendation) whenever
+  // summary data changes. A single pass computes the full desired set so the
+  // two rules can't overwrite each other, and `setWatchlistAutoTags` is a no-op
+  // when nothing changed and never bumps the sync data version (these tags are
+  // derived, not user data).
   useEffect(() => {
     for (const item of items) {
       if (item.id == null) continue;
       const s = summaries.get(item.ticker);
-      const hasDividend = !!(s && (s.dividendYield > 0 || s.dividendRate > 0));
-      const autoTags = item.autoTags ?? [];
-      const hasTag = autoTags.includes(DIVIDEND_AUTO_TAG);
-      if (hasDividend && !hasTag) {
-        updateWatchlistItem(item.id, {
-          autoTags: [...autoTags, DIVIDEND_AUTO_TAG],
-        });
-      } else if (!hasDividend && hasTag) {
-        updateWatchlistItem(item.id, {
-          autoTags: autoTags.filter((t) => t !== DIVIDEND_AUTO_TAG),
-        });
-      }
-    }
-  }, [items, summaries]);
+      if (!s) continue; // no data yet — leave existing tags alone
+      const current = item.autoTags ?? [];
+      const hasDividend = s.dividendYield > 0 || s.dividendRate > 0;
+      const recTag = s.recommendation ? normalizeRecommendationKey(s.recommendation) : null;
 
-  // Sync recommendation auto-tag when summary data is available (re-checked on each load/refresh).
-  useEffect(() => {
-    for (const item of items) {
-      if (item.id == null) continue;
-      const s = summaries.get(item.ticker);
-      const wantedTag = s?.recommendation ? normalizeRecommendationKey(s.recommendation) : null;
-      const autoTags = item.autoTags ?? [];
-      const currentRecs = autoTags.filter((t) => isRecommendationTag(t));
-      if (wantedTag) {
-        if (!currentRecs.includes(wantedTag) || currentRecs.length > 1) {
-          const withoutRec = autoTags.filter((t) => !isRecommendationTag(t));
-          updateWatchlistItem(item.id, { autoTags: [...withoutRec, wantedTag] });
-        }
-      } else if (currentRecs.length > 0) {
-        updateWatchlistItem(item.id, {
-          autoTags: autoTags.filter((t) => !isRecommendationTag(t)),
-        });
-      }
+      const desired = current.filter((t) => t !== DIVIDEND_AUTO_TAG && !isRecommendationTag(t));
+      if (hasDividend) desired.push(DIVIDEND_AUTO_TAG);
+      if (recTag) desired.push(recTag);
+
+      void setWatchlistAutoTags(item.id, desired);
     }
   }, [items, summaries]);
 
@@ -439,7 +422,10 @@ function WatchlistRow({
   const [showTagEditor, setShowTagEditor] = useState(false);
   const [showIVInput, setShowIVInput] = useState(false);
   const [ivInput, setIvInput] = useState('');
-  const quoteCcy = normalizeCurrency(summary?.currency) ?? DEFAULT_CURRENCY;
+  // Yahoo-reported quote currency; when known it is the currency intrinsic
+  // values are stored in (see addIntrinsicValue), so the select is locked to it.
+  const reportedCcy = normalizeCurrency(summary?.currency) ?? null;
+  const quoteCcy = reportedCcy ?? DEFAULT_CURRENCY;
   const [ivCurrency, setIvCurrency] = useState<CurrencyCode>(quoteCcy);
   const [tagInput, setTagInput] = useState('');
 
@@ -833,6 +819,7 @@ function WatchlistRow({
           <CurrencySelect
             value={ivCurrency}
             onChange={setIvCurrency}
+            reported={reportedCcy}
             className="px-1 py-1 text-xs rounded bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-indigo-500 max-w-[7rem]"
           />
           <button
@@ -980,7 +967,8 @@ function TickerDetailModal({
     });
   }, [dataSpanDays]);
 
-  const quoteCcy = normalizeCurrency(summary?.currency) ?? DEFAULT_CURRENCY;
+  const reportedCcy = normalizeCurrency(summary?.currency) ?? null;
+  const quoteCcy = reportedCcy ?? DEFAULT_CURRENCY;
   const targetMedian = summary?.targetMedian ?? 0;
   const currentPrice = summary?.price ?? 0;
   const [ivModalCurrency, setIvModalCurrency] = useState<CurrencyCode>(quoteCcy);
@@ -1242,6 +1230,7 @@ function TickerDetailModal({
               <CurrencySelect
                 value={ivModalCurrency}
                 onChange={setIvModalCurrency}
+                reported={reportedCcy}
                 className="px-2 py-1.5 text-sm rounded-lg bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-indigo-500 max-w-[9rem]"
               />
               <input
@@ -1481,7 +1470,7 @@ function TickerDetailModal({
                   )}
                   <div
                     className="tiptap text-sm text-gray-700 dark:text-slate-300"
-                    dangerouslySetInnerHTML={{ __html: note.content }}
+                    dangerouslySetInnerHTML={{ __html: sanitizeNoteHtml(note.content) }}
                   />
                 </div>
               ))
