@@ -52,15 +52,34 @@ export interface PriceData {
   lastUpdated: Date;
 }
 
+/**
+ * How interest on a cash deposit is paid.
+ * - `periodic`: simple interest paid out every `payoutFrequencyMonths` months;
+ *   the account is worth principal + interest accrued since the last payout.
+ * - `maturity`: interest compounds yearly and is paid together with the
+ *   principal on `maturityDate`; the account is worth principal × (1+r)^years.
+ */
+export type CashPayoutMode = 'periodic' | 'maturity';
+
 export interface CashAccount {
   id?: number;
   name: string;
-  balance: number;
-  /** ISO 4217 currency for balance. */
+  /** Amount originally deposited, in `currency`. */
+  principal: number;
+  /** Date the principal was deposited; interest accrues from here. */
+  depositDate: Date;
+  /** ISO 4217 currency for principal. */
   currency: string;
+  /** Yearly interest rate as a decimal (0.045 = 4.5% p.a.). */
   interestRate: number;
-  compoundFrequency: 'daily' | 'monthly' | 'none';
-  lastInterestDate: Date;
+  payoutMode: CashPayoutMode;
+  /** Months between interest payouts. Used when `payoutMode` is `periodic`. */
+  payoutFrequencyMonths?: number;
+  /**
+   * Date principal and compounded interest are paid out. Used when
+   * `payoutMode` is `maturity`; absent on legacy rows that predate the field.
+   */
+  maturityDate?: Date;
   createdAt: Date;
 }
 

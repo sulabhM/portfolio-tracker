@@ -63,7 +63,9 @@ async function depositToCash(
     return;
   }
 
-  await updateCashAccount(target.id, { balance: target.balance + amount });
+  await updateCashAccount(target.id, {
+    principal: target.principal + amount,
+  });
 }
 
 async function processHoldingDividends(ticker: string): Promise<number> {
@@ -154,76 +156,4 @@ async function processHoldingDividends(ticker: string): Promise<number> {
   }
 
   return count;
-}
-
-export async function accrueInterest(): Promise<number> {
-  const accounts = await db.cashAccounts.toArray();
-  const now = new Date();
-  let totalAccrued = 0;
-
-  for (const account of accounts) {
-    if (
-      !account.id ||
-      account.compoundFrequency === 'none' ||
-      account.interestRate <= 0 ||
-      account.balance <= 0
-    ) {
-      continue;
-    }
-
-    const lastDate = new Date(account.lastInterestDate);
-    const msElapsed = now.getTime() - lastDate.getTime();
-    const daysElapsed = msElapsed / (1000 * 60 * 60 * 24);
-
-    if (daysElapsed < 1) continue;
-
-    let shouldApply = false;
-    let periodsToApply = 0;
-    let ratePerPeriod = 0;
-
-    if (account.compoundFrequency === 'daily') {
-      const fullDays = Math.floor(daysElapsed);
-      if (fullDays >= 1) {
-        shouldApply = true;
-        periodsToApply = fullDays;
-        ratePerPeriod = account.interestRate / 365;
-      }
-    } else if (account.compoundFrequency === 'monthly') {
-      const lastMonth =
-        lastDate.getFullYear() * 12 + lastDate.getMonth();
-      const currentMonth = now.getFullYear() * 12 + now.getMonth();
-      const monthsElapsed = currentMonth - lastMonth;
-      if (monthsElapsed >= 1) {
-        shouldApply = true;
-        periodsToApply = monthsElapsed;
-        ratePerPeriod = account.interestRate / 12;
-      }
-    }
-
-    if (!shouldApply || periodsToApply === 0) continue;
-
-    const newBalance =
-      account.balance * Math.pow(1 + ratePerPeriod, periodsToApply);
-    const interest = newBalance - account.balance;
-    totalAccrued += interest;
-
-    await updateCashAccount(account.id, {
-      balance: newBalance,
-      lastInterestDate: now,
-    });
-
-    if (interest > 0.001) {
-      await addTransaction({
-        ticker: account.name,
-        type: 'interest',
-        shares: 0,
-        price: interest,
-        currency: account.currency,
-        date: now,
-        notes: `Interest: ${(account.interestRate * 100).toFixed(2)}% APR, ${periodsToApply} ${account.compoundFrequency === 'daily' ? 'day(s)' : 'month(s)'}`,
-      });
-    }
-  }
-
-  return totalAccrued;
 }

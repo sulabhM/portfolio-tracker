@@ -1,6 +1,10 @@
-import { DEFAULT_CURRENCY } from '../constants/currencies';
+import {
+  DEFAULT_CURRENCY,
+  normalizeCurrencyWithDefault,
+} from '../constants/currencies';
 import { PORTFOLIO_AUTO_TAG } from '../constants/autoTags';
 import { db } from '../db/database';
+import { normalizeCashAccount } from '../utils/cashAccount';
 import type {
   Transaction,
   Note,
@@ -81,9 +85,35 @@ export interface BackupData {
   tickers: TickerEntry[];
   transactions: Array<Omit<Transaction, 'date'> & { date: string }>;
   notes: Array<Omit<Note, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }>;
-  cashAccounts: Array<Omit<CashAccount, 'lastInterestDate' | 'createdAt'> & { lastInterestDate: string; createdAt: string }>;
+  cashAccounts: BackupCashAccount[];
   dividendRecords: Array<Omit<DividendRecord, 'processedAt'> & { processedAt: string }>;
 }
+
+/** Cash account as written to the sync file (dates as ISO strings). */
+export type BackupCashAccount = Omit<
+  CashAccount,
+  'depositDate' | 'maturityDate' | 'createdAt'
+> & {
+  depositDate: string;
+  maturityDate?: string;
+  createdAt: string;
+};
+
+/**
+ * Cash account as it may appear in a sync file written before the term-deposit
+ * model (`balance` / `compoundFrequency` / `lastInterestDate`). Same backup
+ * version; `normalizeCashAccount` upgrades it on import.
+ */
+type LegacyBackupCashAccount = {
+  id?: number;
+  name: string;
+  balance: number;
+  currency?: string;
+  interestRate: number;
+  compoundFrequency: 'daily' | 'monthly' | 'none';
+  lastInterestDate: string;
+  createdAt: string;
+};
 
 function toDate(val: string | Date): Date {
   return typeof val === 'string' ? new Date(val) : val;
@@ -206,6 +236,34 @@ function deserializeTickerEntry(entry: TickerEntry): DbTickerEntry {
   };
 }
 
+function serializeCashAccount(c: CashAccount): BackupCashAccount {
+  const out: BackupCashAccount = {
+    name: c.name,
+    principal: c.principal,
+    depositDate: toIso(c.depositDate),
+    currency: c.currency ?? DEFAULT_CURRENCY,
+    interestRate: c.interestRate,
+    payoutMode: c.payoutMode,
+    createdAt: toIso(c.createdAt),
+  };
+  if (c.id != null) out.id = c.id;
+  if (c.payoutMode === 'periodic' && c.payoutFrequencyMonths != null) {
+    out.payoutFrequencyMonths = c.payoutFrequencyMonths;
+  }
+  if (c.payoutMode === 'maturity' && c.maturityDate != null) {
+    out.maturityDate = toIso(c.maturityDate);
+  }
+  return out;
+}
+
+function deserializeCashAccount(
+  c: BackupCashAccount | LegacyBackupCashAccount
+): CashAccount {
+  const account = normalizeCashAccount(c);
+  account.currency = normalizeCurrencyWithDefault(account.currency);
+  return account;
+}
+
 export async function exportAllData(): Promise<BackupData> {
   const [
     dataVersionRow,
@@ -241,11 +299,7 @@ export async function exportAllData(): Promise<BackupData> {
       createdAt: toIso(n.createdAt),
       updatedAt: toIso(n.updatedAt),
     })),
-    cashAccounts: cashAccounts.map((c) => ({
-      ...c,
-      lastInterestDate: toIso(c.lastInterestDate),
-      createdAt: toIso(c.createdAt),
-    })),
+    cashAccounts: cashAccounts.map(serializeCashAccount),
     dividendRecords: dividendRecords.map((d) => ({
       ...d,
       processedAt: toIso(d.processedAt),
@@ -289,12 +343,8 @@ export async function importAllData(data: BackupData): Promise<void> {
         }))
       );
       await db.cashAccounts.bulkAdd(
-        data.cashAccounts.map((c) => ({
-          ...c,
-          currency: c.currency ?? DEFAULT_CURRENCY,
-          lastInterestDate: toDate(c.lastInterestDate),
-          createdAt: toDate(c.createdAt),
-        }))
+        (data.cashAccounts as Array<BackupCashAccount | LegacyBackupCashAccount>)
+          .map(deserializeCashAccount)
       );
       await db.dividendRecords.bulkAdd(
         data.dividendRecords.map((d) => ({

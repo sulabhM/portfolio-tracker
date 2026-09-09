@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie';
 import { splitLegacyTags } from '../constants/autoTags';
+import { normalizeCashAccount } from '../utils/cashAccount';
 import type {
   Transaction,
   Note,
@@ -275,6 +276,30 @@ export class PortfolioDatabase extends Dexie {
       tickers: 'ticker, *userTags, *autoTags',
       meta: 'key',
     });
+
+    // v11: cash accounts become term deposits described by principal, deposit
+    // date, yearly rate and payout mode; the value is derived at read time
+    // instead of a `balance` mutated by a background accrual job.
+    this.version(11)
+      .stores({
+        transactions: '++id, holdingId, ticker, type, date',
+        notes: '++id, *tags, *tickerLinks',
+        priceCache: 'ticker',
+        cashAccounts: '++id, name',
+        dividendRecords: '++id, holdingId, ticker, [ticker+exDate]',
+        tickers: 'ticker, *userTags, *autoTags',
+        meta: 'key',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('cashAccounts')
+          .toCollection()
+          .modify((row: Record<string, unknown>) => {
+            const normalized = normalizeCashAccount(row);
+            for (const key of Object.keys(row)) delete row[key];
+            Object.assign(row, normalized);
+          });
+      });
   }
 }
 

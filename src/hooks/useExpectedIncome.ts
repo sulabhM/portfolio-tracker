@@ -3,6 +3,7 @@ import { fetchDividendRates } from '../services/yahooFinance';
 import type { DividendRateData } from '../services/yahooFinance';
 import type { Holding, CashAccount } from '../types';
 import { toUsd } from '../utils/portfolioCurrency';
+import { annualCashInterest } from '../utils/cashAccount';
 
 export interface IncomeItem {
   ticker: string;
@@ -64,14 +65,8 @@ export function useExpectedIncome(
 
     let interestIncome = 0;
     for (const a of cashAccounts) {
-      if (a.interestRate <= 0 || a.compoundFrequency === 'none') continue;
-      let effectiveRate = a.interestRate;
-      if (a.compoundFrequency === 'daily') {
-        effectiveRate = Math.pow(1 + a.interestRate / 365, 365) - 1;
-      } else if (a.compoundFrequency === 'monthly') {
-        effectiveRate = Math.pow(1 + a.interestRate / 12, 12) - 1;
-      }
-      const income = a.balance * effectiveRate;
+      const income = annualCashInterest(a);
+      if (income <= 0) continue;
       const incomeUsd = toUsd(income, a.currency, rates);
       interestIncome += incomeUsd;
       breakdown.push({

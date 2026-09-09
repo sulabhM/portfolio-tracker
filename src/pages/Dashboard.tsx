@@ -18,6 +18,7 @@ import { useMarketState } from '../hooks/useMarketState';
 import { useEffectivePrice } from '../hooks/useEffectivePrice';
 import { useExchangeRates } from '../hooks/useExchangeRates';
 import { collectPortfolioCurrencies, quoteCurrency, toUsd } from '../utils/portfolioCurrency';
+import { valueCashAccount } from '../utils/cashAccount';
 import { useRegisterRefresh } from '../contexts/RefreshTimerContext';
 import { formatCurrency, formatPercent, cn } from '../utils/format';
 import { EmptyState } from '../components/common/EmptyState';
@@ -65,10 +66,13 @@ export function Dashboard() {
   const stableRefresh = useCallback(() => forceRefresh(), [forceRefresh]);
   useRegisterRefresh('dashboard-prices', stableRefresh);
 
+  // Cash is valued as of today from principal, deposit date and rate, so a
+  // term deposit's accrued interest is part of the portfolio value.
   const totalCash = useMemo(
     () =>
       cashAccounts.reduce(
-        (sum, a) => sum + toUsd(a.balance, a.currency, rates),
+        (sum, a) =>
+          sum + toUsd(valueCashAccount(a).value, a.currency, rates),
         0
       ),
     [cashAccounts, rates]
