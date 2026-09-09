@@ -1,6 +1,28 @@
+export type AccountType = 'brokerage' | 'bank' | 'retirement' | 'other';
+
+/**
+ * A container for positions and cash: a brokerage, a bank, a pension wrapper.
+ * Every position and every cash/deposit entry belongs to exactly one account.
+ */
+export interface Account {
+  id?: number;
+  name: string;
+  type: AccountType;
+  institution?: string;
+  notes?: string;
+  /** Display order in dropdowns and the grouped portfolio view. */
+  sortOrder: number;
+  createdAt: Date;
+}
+
+/**
+ * Flattened view of one position in one account. Derived from
+ * `TickerEntry.positions[]` plus the ticker-level fields; not stored as such.
+ */
 export interface Holding {
-  /** IndexedDB ticker key. */
+  /** `${accountId}:${TICKER}` — see `holdingKey` in utils/positions. */
   id?: string;
+  accountId: number;
   ticker: string;
   name: string;
   shares: number;
@@ -18,7 +40,9 @@ export interface Holding {
 
 export interface Transaction {
   id?: number;
+  /** `${accountId}:${TICKER}` of the position this relates to, when known. */
   holdingId?: string;
+  accountId?: number;
   ticker: string;
   type: 'buy' | 'sell' | 'dividend' | 'interest';
   shares: number;
@@ -63,6 +87,8 @@ export type CashPayoutMode = 'periodic' | 'maturity';
 
 export interface CashAccount {
   id?: number;
+  /** Owning `Account`. */
+  accountId: number;
   name: string;
   /** Amount originally deposited, in `currency`. */
   principal: number;
@@ -111,7 +137,9 @@ export interface IntrinsicValue {
 
 export interface DividendRecord {
   id?: number;
+  /** `${accountId}:${TICKER}` of the position that was paid. */
   holdingId: string;
+  accountId: number;
   ticker: string;
   exDate: number;
   amount: number;
@@ -134,10 +162,30 @@ export interface DataVersion {
   updatedAt: Date;
 }
 
-export interface TickerPortfolioInfo {
+/**
+ * One account's position in a ticker. Sector/country live on the ticker row
+ * since they describe the security, not the position.
+ */
+export interface TickerPosition {
+  accountId: number;
   shares: number;
   avgCost: number;
   /** ISO 4217 currency for avgCost and cost basis. */
+  currency: string;
+  drip: boolean;
+  dividendTaxRate: number;
+  addedDate: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Pre-v12 single-position blob (`TickerEntry.portfolio`). Kept only so
+ * migrations and legacy sync-file imports can be typed.
+ */
+export interface LegacyTickerPortfolioInfo {
+  shares: number;
+  avgCost: number;
   currency: string;
   sector: string;
   country: string;
@@ -165,6 +213,10 @@ export interface TickerEntry {
   userTags: string[];
   autoTags: string[];
   addedAt: Date;
-  portfolio?: TickerPortfolioInfo;
+  /** Security-level classification; populated once the ticker is held. */
+  sector?: string;
+  country?: string;
+  /** One entry per account holding this ticker. Empty when watchlist-only. */
+  positions: TickerPosition[];
   intrinsicValues: TickerIntrinsicValue[];
 }

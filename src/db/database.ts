@@ -1,15 +1,34 @@
 import Dexie, { type Table } from 'dexie';
 import { splitLegacyTags } from '../constants/autoTags';
 import { normalizeCashAccount } from '../utils/cashAccount';
+import {
+  holdingKey,
+  newDefaultAccount,
+  normalizeTickerEntry,
+  type RawTickerEntry,
+} from '../utils/positions';
 import type {
+  Account,
   Transaction,
   Note,
   PriceData,
   CashAccount,
   DividendRecord,
   TickerEntry,
+  LegacyTickerPortfolioInfo,
   DataVersion,
 } from '../types';
+
+/** Ticker row shape between v8 and v11 (single `portfolio` blob). */
+interface LegacyTickerEntry {
+  ticker: string;
+  name: string;
+  userTags: string[];
+  autoTags: string[];
+  addedAt: Date;
+  portfolio?: LegacyTickerPortfolioInfo;
+  intrinsicValues: TickerEntry['intrinsicValues'];
+}
 
 export class PortfolioDatabase extends Dexie {
   tickers!: Table<TickerEntry, string>;
@@ -18,6 +37,7 @@ export class PortfolioDatabase extends Dexie {
   priceCache!: Table<PriceData, string>;
   cashAccounts!: Table<CashAccount, number>;
   dividendRecords!: Table<DividendRecord, number>;
+  accounts!: Table<Account, number>;
   meta!: Table<DataVersion, string>;
 
   constructor() {
@@ -182,8 +202,8 @@ export class PortfolioDatabase extends Dexie {
           tx.table('intrinsicValues').toArray(),
         ]);
 
-        const entries = new Map<string, TickerEntry>();
-        const ensureEntry = (ticker: string): TickerEntry => {
+        const entries = new Map<string, LegacyTickerEntry>();
+        const ensureEntry = (ticker: string): LegacyTickerEntry => {
           const key = ticker.toUpperCase();
           let entry = entries.get(key);
           if (!entry) {
@@ -295,9 +315,73 @@ export class PortfolioDatabase extends Dexie {
           .table('cashAccounts')
           .toCollection()
           .modify((row: Record<string, unknown>) => {
-            const normalized = normalizeCashAccount(row);
+            // Accounts don't exist until v12; leave `accountId` unset so the
+            // v12 upgrade assigns the default account.
+            const normalized: Partial<CashAccount> = normalizeCashAccount(row, 0);
+            delete normalized.accountId;
             for (const key of Object.keys(row)) delete row[key];
             Object.assign(row, normalized);
+          });
+      });
+
+    // v12: accounts. Positions move from a single `tickers.portfolio` blob to
+    // `tickers.positions[]` (one per account) with sector/country hoisted to
+    // the ticker row; cash, transactions and dividend records gain an
+    // `accountId`. Everything existing lands in a new default account.
+    this.version(12)
+      .stores({
+        transactions: '++id, holdingId, accountId, ticker, type, date',
+        notes: '++id, *tags, *tickerLinks',
+        priceCache: 'ticker',
+        cashAccounts: '++id, accountId, name',
+        dividendRecords:
+          '++id, holdingId, accountId, ticker, [ticker+exDate], [accountId+ticker+exDate]',
+        tickers: 'ticker, *userTags, *autoTags',
+        accounts: '++id, name, sortOrder',
+        meta: 'key',
+      })
+      .upgrade(async (tx) => {
+        const defaultId = (await tx
+          .table('accounts')
+          .add(newDefaultAccount())) as number;
+
+        await tx
+          .table('tickers')
+          .toCollection()
+          .modify((row: RawTickerEntry) => {
+            const normalized = normalizeTickerEntry(row, defaultId);
+            const bag = row as Record<string, unknown>;
+            for (const key of Object.keys(bag)) delete bag[key];
+            Object.assign(bag, normalized);
+          });
+
+        await tx
+          .table('cashAccounts')
+          .toCollection()
+          .modify((c: { accountId?: number }) => {
+            if (c.accountId == null) c.accountId = defaultId;
+          });
+
+        await tx
+          .table('transactions')
+          .toCollection()
+          .modify((t: { accountId?: number; holdingId?: string; ticker: string }) => {
+            if (!t.holdingId) return;
+            if (t.accountId == null) t.accountId = defaultId;
+            // Legacy holdingId was the bare ticker.
+            if (!t.holdingId.includes(':')) {
+              t.holdingId = holdingKey(t.accountId, t.holdingId);
+            }
+          });
+
+        await tx
+          .table('dividendRecords')
+          .toCollection()
+          .modify((d: { accountId?: number; holdingId: string; ticker: string }) => {
+            if (d.accountId == null) d.accountId = defaultId;
+            if (!d.holdingId || !d.holdingId.includes(':')) {
+              d.holdingId = holdingKey(d.accountId, d.ticker);
+            }
           });
       });
   }

@@ -45,6 +45,8 @@ export function useExpectedIncome(
     let dividendIncome = 0;
     const breakdown: IncomeItem[] = [];
 
+    // A ticker held in several accounts is one line in the breakdown.
+    const byTicker = new Map<string, IncomeItem>();
     for (const h of holdings) {
       const rate = divRates.get(h.ticker.toUpperCase());
       if (rate && rate.annualRate > 0) {
@@ -54,14 +56,20 @@ export function useExpectedIncome(
           : gross;
         const netUsd = toUsd(net, h.currency, rates);
         dividendIncome += netUsd;
-        breakdown.push({
-          ticker: h.ticker,
-          name: h.name,
-          type: 'dividend',
-          annualAmount: netUsd,
-        });
+        const existing = byTicker.get(h.ticker);
+        if (existing) {
+          existing.annualAmount += netUsd;
+        } else {
+          byTicker.set(h.ticker, {
+            ticker: h.ticker,
+            name: h.name,
+            type: 'dividend',
+            annualAmount: netUsd,
+          });
+        }
       }
     }
+    breakdown.push(...byTicker.values());
 
     let interestIncome = 0;
     for (const a of cashAccounts) {

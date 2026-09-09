@@ -11,7 +11,7 @@ import {
   PieChart as PieChartIcon,
 } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
-import { useHoldings, useCashAccounts } from '../db/hooks';
+import { useHoldings, useCashAccounts, useAccounts, NO_ACCOUNTS } from '../db/hooks';
 import { usePrices } from '../hooks/usePrices';
 import { useExpectedIncome } from '../hooks/useExpectedIncome';
 import { useMarketState } from '../hooks/useMarketState';
@@ -51,8 +51,12 @@ interface AllocationRow {
 export function Dashboard() {
   const holdings = useHoldings();
   const cashAccounts = useCashAccounts();
+  const accounts = useAccounts() ?? NO_ACCOUNTS;
   const navigate = useNavigate();
-  const tickers = useMemo(() => holdings.map((h) => h.ticker), [holdings]);
+  const tickers = useMemo(
+    () => [...new Set(holdings.map((h) => h.ticker))],
+    [holdings]
+  );
   const { prices, loading, forceRefresh } = usePrices(tickers);
   const marketState = useMarketState();
   const resolve = useEffectivePrice();
@@ -119,16 +123,24 @@ export function Dashboard() {
   const allocationData: AllocationRow[] = useMemo(() => {
     // Holdings whose USD value is unknown (missing FX rate) are left out of the
     // breakdown entirely — a NaN slice would blank the whole chart.
-    const raw: AllocationRow[] = holdings.flatMap((h) => {
+    // The same ticker held in several accounts is one row here.
+    const byTicker = new Map<string, { value: number; cost: number }>();
+    for (const h of holdings) {
       const p = prices.get(h.ticker.toUpperCase());
       const ep = resolve(p, h.avgCost);
       const qCcy = quoteCurrency(p, h);
       const value = toUsd(h.shares * ep.price, qCcy, rates);
-      if (!Number.isFinite(value)) return [];
+      if (!Number.isFinite(value)) continue;
       const cost = toUsd(h.shares * h.avgCost, h.currency, rates);
+      const acc = byTicker.get(h.ticker) ?? { value: 0, cost: 0 };
+      acc.value += value;
+      acc.cost += cost;
+      byTicker.set(h.ticker, acc);
+    }
+    const raw: AllocationRow[] = [...byTicker.entries()].map(([name, { value, cost }]) => {
       const pnl = value - cost;
       const pnlPercent = cost !== 0 ? (pnl / cost) * 100 : 0;
-      return [{ name: h.ticker, value, percent: 0, pnl, pnlPercent, isCash: false }];
+      return { name, value, percent: 0, pnl, pnlPercent, isCash: false };
     });
 
     if (totalCash > 0) {
@@ -196,7 +208,35 @@ export function Dashboard() {
       .sort((a, b) => b.value - a.value);
   }, [holdings, prices, totalCash, resolve, rates]);
 
-  const [allocationTab, setAllocationTab] = useState<'holding' | 'sector' | 'country'>('holding');
+  const accountAllocationData = useMemo(() => {
+    const byAccount = new Map<number, number>();
+    const add = (id: number, value: number) => {
+      if (!Number.isFinite(value)) return;
+      byAccount.set(id, (byAccount.get(id) ?? 0) + value);
+    };
+    for (const h of holdings) {
+      const p = prices.get(h.ticker.toUpperCase());
+      const ep = resolve(p, h.avgCost);
+      add(h.accountId, toUsd(h.shares * ep.price, quoteCurrency(p, h), rates));
+    }
+    for (const c of cashAccounts) {
+      add(c.accountId, toUsd(valueCashAccount(c).value, c.currency, rates));
+    }
+    const total = [...byAccount.values()].reduce((s, v) => s + v, 0);
+    const nameOf = (id: number) =>
+      accounts.find((a) => a.id === id)?.name ?? `Account #${id}`;
+    return [...byAccount.entries()]
+      .map(([id, value]) => ({
+        name: nameOf(id),
+        value: Math.round(value * 100) / 100,
+        percent: total > 0 ? (value / total) * 100 : 0,
+      }))
+      .sort((a, b) => b.value - a.value);
+  }, [holdings, cashAccounts, accounts, prices, resolve, rates]);
+
+  const [allocationTab, setAllocationTab] = useState<
+    'holding' | 'sector' | 'country' | 'account'
+  >('holding');
 
   if (holdings.length === 0 && cashAccounts.length === 0) {
     return (
@@ -329,6 +369,20 @@ export function Dashboard() {
                 <PieChartIcon size={12} />
                 By country
               </button>
+              {accounts.length > 1 && (
+                <button
+                  onClick={() => setAllocationTab('account')}
+                  className={cn(
+                    'flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors',
+                    allocationTab === 'account'
+                      ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                      : 'text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-slate-200'
+                  )}
+                >
+                  <PieChartIcon size={12} />
+                  By account
+                </button>
+              )}
             </div>
           </div>
 
@@ -521,6 +575,76 @@ export function Dashboard() {
           {allocationTab === 'country' && countryAllocationData.length === 0 && (
             <p className="text-sm text-gray-500 dark:text-slate-400 py-4">
               No country/region data to display.
+            </p>
+          )}
+
+          {allocationTab === 'account' && accountAllocationData.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center gap-4">
+              <div className="w-full sm:w-48 h-48 shrink-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={accountAllocationData}
+                      dataKey="value"
+                      nameKey="name"
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={40}
+                      outerRadius={70}
+                      paddingAngle={1}
+                    >
+                      {accountAllocationData.map((_, i) => (
+                        <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      formatter={(value, _name, props) => [
+                        value != null ? `${formatCurrency(Number(value))} (${(props?.payload as { percent?: number })?.percent?.toFixed(1) ?? 0}%)` : '',
+                        'Value',
+                      ]}
+                      contentStyle={{
+                        backgroundColor: 'var(--tw-bg-slate-900, #0f172a)',
+                        border: '1px solid #334155',
+                        borderRadius: '0.5rem',
+                        fontSize: '0.75rem',
+                      }}
+                      labelFormatter={(name) => name}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="flex-1 min-w-0 space-y-1.5 w-full">
+                {accountAllocationData.map((row, i) => (
+                  <div
+                    key={row.name}
+                    className="flex items-center justify-between text-sm"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div
+                        className="w-2.5 h-2.5 rounded-full shrink-0"
+                        style={{ backgroundColor: COLORS[i % COLORS.length] }}
+                      />
+                      <span className="font-medium text-gray-900 dark:text-white truncate">
+                        {row.name}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-gray-500 dark:text-slate-400 tabular-nums">
+                        {row.percent.toFixed(1)}%
+                      </span>
+                      <span className="font-medium text-gray-900 dark:text-white tabular-nums">
+                        {formatCurrency(row.value)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {allocationTab === 'account' && accountAllocationData.length === 0 && (
+            <p className="text-sm text-gray-500 dark:text-slate-400 py-4">
+              No account data to display.
             </p>
           )}
         </div>

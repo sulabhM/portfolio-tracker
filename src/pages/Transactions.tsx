@@ -1,32 +1,49 @@
 import { useState } from 'react';
 import { Plus, ArrowLeftRight } from 'lucide-react';
-import { useTransactions } from '../db/hooks';
+import { useTransactions, useAccounts } from '../db/hooks';
 import { TransactionList } from '../components/transactions/TransactionList';
 import { AddTransactionForm } from '../components/transactions/AddTransactionForm';
 import { Modal } from '../components/common/Modal';
 import { EmptyState } from '../components/common/EmptyState';
+import { AccountSelect } from '../components/common/AccountSelect';
 
 export function Transactions() {
-  const transactions = useTransactions();
+  const accounts = useAccounts() ?? [];
+  const [accountFilter, setAccountFilter] = useState<number | undefined>();
+  const transactions = useTransactions(undefined, accountFilter);
+  const allTransactions = useTransactions();
   const [showAdd, setShowAdd] = useState(false);
   const [filterType, setFilterType] = useState('all');
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
           Transactions
         </h1>
-        <button
-          onClick={() => setShowAdd(true)}
-          className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
-        >
-          <Plus size={16} />
-          Add Transaction
-        </button>
+        <div className="flex items-center gap-2">
+          {accounts.length > 1 && (
+            <AccountSelect
+              accounts={accounts}
+              value={accountFilter}
+              isAll={accountFilter == null}
+              allLabel="All accounts"
+              onAllSelected={() => setAccountFilter(undefined)}
+              onChange={setAccountFilter}
+              className="px-3 py-2 text-sm rounded-lg bg-white dark:bg-slate-900 border border-gray-300 dark:border-slate-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          )}
+          <button
+            onClick={() => setShowAdd(true)}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+          >
+            <Plus size={16} />
+            Add Transaction
+          </button>
+        </div>
       </div>
 
-      {transactions.length === 0 ? (
+      {allTransactions.length === 0 ? (
         <EmptyState
           icon={<ArrowLeftRight size={48} />}
           title="No transactions yet"
@@ -44,6 +61,8 @@ export function Transactions() {
       ) : (
         <TransactionList
           transactions={transactions}
+          accounts={accounts}
+          showAccount={accountFilter == null && accounts.length > 1}
           filterType={filterType}
           onFilterChange={setFilterType}
         />
@@ -54,7 +73,10 @@ export function Transactions() {
         onClose={() => setShowAdd(false)}
         title="Add Transaction"
       >
-        <AddTransactionForm onDone={() => setShowAdd(false)} />
+        <AddTransactionForm
+          defaultAccountId={accountFilter}
+          onDone={() => setShowAdd(false)}
+        />
       </Modal>
     </div>
   );

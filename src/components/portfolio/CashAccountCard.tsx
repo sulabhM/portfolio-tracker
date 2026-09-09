@@ -17,15 +17,27 @@ import {
   valueCashAccount,
 } from '../../utils/cashAccount';
 import { CurrencySelect } from '../common/CurrencySelect';
+import { AccountSelect } from '../common/AccountSelect';
 import { confirmBeforeDelete } from '../../utils/confirmBeforeDelete';
 import { Modal } from '../common/Modal';
+import { useAccounts } from '../../db/hooks';
 
 interface CashAccountsCardProps {
+  /** Cash / deposit entries to show (already filtered to the relevant account). */
   accounts: CashAccount[];
   rates?: Map<string, number>;
+  /** Account new entries default to (the group or the filtered account). */
+  defaultAccountId?: number;
+  /** Compact variant for embedding under an account group. */
+  embedded?: boolean;
 }
 
-export function CashAccountsCard({ accounts, rates }: CashAccountsCardProps) {
+export function CashAccountsCard({
+  accounts,
+  rates,
+  defaultAccountId,
+  embedded,
+}: CashAccountsCardProps) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<CashAccount | undefined>();
   const totalCash = accounts.reduce(
@@ -48,17 +60,29 @@ export function CashAccountsCard({ accounts, rates }: CashAccountsCardProps) {
     if (account.id == null) return;
     const { value } = valueCashAccount(account);
     await confirmBeforeDelete(
-      `Delete cash account "${account.name}" (${formatMoney(value, account.currency)})? This cannot be undone.`,
+      `Delete "${account.name}" (${formatMoney(value, account.currency)})? This cannot be undone.`,
       () => deleteCashAccount(account.id!)
     );
   }
 
   return (
-    <div className="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5 mb-6">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-          <Landmark size={18} className="text-indigo-500" />
-          Cash Accounts
+    <div
+      className={
+        embedded
+          ? 'pt-4'
+          : 'bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5 mb-6'
+      }
+    >
+      <div className="flex items-center justify-between mb-3">
+        <h2
+          className={
+            embedded
+              ? 'text-sm font-semibold text-gray-700 dark:text-slate-300 flex items-center gap-2'
+              : 'text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2'
+          }
+        >
+          <Landmark size={embedded ? 15 : 18} className="text-indigo-500" />
+          Cash &amp; Deposits
           {totalCash > 0 && (
             <span className="text-sm font-normal text-gray-500 dark:text-slate-400">
               &middot; {formatCurrency(totalCash)} today
@@ -70,14 +94,13 @@ export function CashAccountsCard({ accounts, rates }: CashAccountsCardProps) {
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
         >
           <Plus size={14} />
-          Add Account
+          Add Cash / Deposit
         </button>
       </div>
 
       {accounts.length === 0 ? (
-        <p className="text-sm text-gray-500 dark:text-slate-400 py-3">
-          No cash accounts yet. Add a deposit to track its value as interest
-          accrues.
+        <p className="text-sm text-gray-500 dark:text-slate-400 py-2">
+          No cash or deposits in this account yet.
         </p>
       ) : (
         <div className="space-y-2">
@@ -95,9 +118,13 @@ export function CashAccountsCard({ accounts, rates }: CashAccountsCardProps) {
       <Modal
         open={showForm}
         onClose={handleDone}
-        title={editing ? 'Edit Cash Account' : 'Add Cash Account'}
+        title={editing ? 'Edit Cash / Deposit' : 'Add Cash / Deposit'}
       >
-        <CashAccountForm account={editing} onDone={handleDone} />
+        <CashAccountForm
+          account={editing}
+          defaultAccountId={defaultAccountId}
+          onDone={handleDone}
+        />
       </Modal>
     </div>
   );
@@ -198,11 +225,20 @@ function fromInputDate(value: string): Date | undefined {
 
 function CashAccountForm({
   account,
+  defaultAccountId,
   onDone,
 }: {
   account?: CashAccount;
+  defaultAccountId?: number;
   onDone: () => void;
 }) {
+  const ownerAccountsQuery = useAccounts();
+  const ownerAccounts = ownerAccountsQuery ?? [];
+  // Explicit pick; falls back to the entry's account, the preselected one,
+  // then the first account.
+  const [pickedAccountId, setAccountId] = useState<number | undefined>();
+  const accountId =
+    pickedAccountId ?? account?.accountId ?? defaultAccountId ?? ownerAccounts[0]?.id;
   const [name, setName] = useState(account?.name ?? '');
   const [principal, setPrincipal] = useState(
     account?.principal != null ? account.principal.toString() : ''
@@ -230,8 +266,9 @@ function CashAccountForm({
 
   const draft = useMemo<CashAccount | undefined>(() => {
     const deposit = fromInputDate(depositDate);
-    if (!deposit) return undefined;
+    if (!deposit || accountId == null) return undefined;
     const base = {
+      accountId,
       name: name.trim(),
       principal: Math.max(0, parseFloat(principal) || 0),
       depositDate: deposit,
@@ -253,6 +290,7 @@ function CashAccountForm({
     };
   }, [
     account?.createdAt,
+    accountId,
     currency,
     depositDate,
     interestRate,
@@ -277,6 +315,7 @@ function CashAccountForm({
     // Spell out both mode-specific fields so switching modes on edit clears
     // the one that no longer applies (Dexie drops `undefined` on update).
     const data: Omit<CashAccount, 'id' | 'createdAt'> = {
+      accountId: draft.accountId,
       name: draft.name,
       principal: draft.principal,
       depositDate: draft.depositDate,
@@ -306,12 +345,22 @@ function CashAccountForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
-        <label className={labelClass}>Account Name</label>
+        <label className={labelClass}>Account</label>
+        <AccountSelect
+          accounts={ownerAccountsQuery}
+          value={accountId}
+          onChange={setAccountId}
+          className={inputClass}
+          required
+        />
+      </div>
+      <div>
+        <label className={labelClass}>Name</label>
         <input
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Fixed Deposit"
+          placeholder="Fixed Deposit, Savings, Settlement cash…"
           required
           className={inputClass}
         />
@@ -475,10 +524,10 @@ function CashAccountForm({
         </button>
         <button
           type="submit"
-          disabled={maturityBeforeDeposit}
+          disabled={maturityBeforeDeposit || accountId == null}
           className="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {account ? 'Update' : 'Add Account'}
+          {account ? 'Update' : 'Add'}
         </button>
       </div>
     </form>

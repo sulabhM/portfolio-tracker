@@ -212,18 +212,18 @@ export function NoteEditor({ note, onBack }: NoteEditorProps) {
             Linked Tickers
           </label>
           <div className="flex flex-wrap gap-1.5">
-            {holdings.map((h) => (
+            {[...new Set(holdings.map((h) => h.ticker))].map((ticker) => (
               <button
-                key={h.id}
-                onClick={() => handleTickerToggle(h.ticker)}
+                key={ticker}
+                onClick={() => handleTickerToggle(ticker)}
                 className={cn(
                   'px-2 py-0.5 text-xs font-medium rounded-full transition-colors',
-                  tickerLinks.includes(h.ticker)
+                  tickerLinks.includes(ticker)
                     ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
                     : 'bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400 hover:bg-gray-200 dark:hover:bg-slate-700'
                 )}
               >
-                {h.ticker}
+                {ticker}
               </button>
             ))}
           </div>

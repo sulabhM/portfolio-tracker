@@ -4,7 +4,14 @@ import { notifyDataChanged } from '../services/dataSyncRegistry';
 import { DEFAULT_CURRENCY, normalizeCurrencyWithDefault } from '../constants/currencies';
 import { PORTFOLIO_AUTO_TAG } from '../constants/autoTags';
 import { fetchTickerCurrency } from '../services/tickerCurrency';
+import {
+  holdingKey,
+  newDefaultAccount,
+  parseHoldingKey,
+  toHoldings,
+} from '../utils/positions';
 import type {
+  Account,
   Holding,
   Transaction,
   Note,
@@ -12,7 +19,7 @@ import type {
   WatchlistItem,
   IntrinsicValue,
   TickerEntry,
-  TickerPortfolioInfo,
+  TickerPosition,
   DividendRecord,
   DataVersion,
 } from '../types';
@@ -74,6 +81,7 @@ function normalizeEntry(entry: TickerEntry): TickerEntry {
     ...entry,
     userTags: entry.userTags ?? [],
     autoTags: entry.autoTags ?? [],
+    positions: entry.positions ?? [],
     intrinsicValues: entry.intrinsicValues ?? [],
   };
 }
@@ -87,14 +95,10 @@ async function readTicker(ticker: string): Promise<TickerEntry | undefined> {
   return entry ? normalizeEntry(entry) : undefined;
 }
 
-function toHolding(entry: TickerEntry): Holding | null {
-  if (!entry.portfolio) return null;
-  return {
-    id: entry.ticker,
-    ticker: entry.ticker,
-    name: entry.name,
-    ...entry.portfolio,
-  };
+function sortHoldings(holdings: Holding[]): Holding[] {
+  return holdings.sort(
+    (a, b) => a.ticker.localeCompare(b.ticker) || a.accountId - b.accountId
+  );
 }
 
 function toWatchlistItem(entry: TickerEntry): WatchlistItem {
@@ -112,26 +116,31 @@ function intrinsicId(ticker: string, date: Date): string {
   return `${ticker.toUpperCase()}|${new Date(date).toISOString()}`;
 }
 
-export function useHoldings() {
+/**
+ * All positions as flattened holdings, one per (account, ticker). Pass an
+ * `accountId` to restrict to a single account.
+ */
+export function useHoldings(accountId?: number) {
   return useLiveQuery(async () => {
     const tickers = await readTickers();
-    return tickers
-      .map(toHolding)
-      .filter((h): h is Holding => h != null)
-      .sort((a, b) => a.ticker.localeCompare(b.ticker));
-  }) ?? [];
+    const all = tickers.flatMap(toHoldings);
+    return sortHoldings(
+      accountId == null ? all : all.filter((h) => h.accountId === accountId)
+    );
+  }, [accountId]) ?? [];
 }
 
-export function useTransactions(ticker?: string) {
+export function useTransactions(ticker?: string, accountId?: number) {
   return useLiveQuery(
     async () => {
-      const txs = await db.transactions.toArray();
-      const filtered = ticker ? txs.filter((t) => t.ticker === ticker) : txs;
-      return filtered.sort(
+      let txs = await db.transactions.toArray();
+      if (ticker) txs = txs.filter((t) => t.ticker === ticker);
+      if (accountId != null) txs = txs.filter((t) => t.accountId === accountId);
+      return txs.sort(
         (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
       );
     },
-    [ticker]
+    [ticker, accountId]
   ) ?? [];
 }
 
@@ -168,26 +177,201 @@ export function useAllTags() {
   }) ?? [];
 }
 
-export function useCashAccounts() {
-  return useLiveQuery(() => db.cashAccounts.toArray()) ?? [];
+export function useCashAccounts(accountId?: number) {
+  return useLiveQuery(async () => {
+    const all = await db.cashAccounts.toArray();
+    return accountId == null ? all : all.filter((c) => c.accountId === accountId);
+  }, [accountId]) ?? [];
 }
 
-// ---- Holding CRUD ----
+// ---- Accounts ----
 
-const PORTFOLIO_FIELDS = [
+function sortAccounts(accounts: Account[]): Account[] {
+  return accounts.sort(
+    (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)
+  );
+}
+
+/**
+ * Accounts in display order. `undefined` while the first read is in flight so
+ * pickers can show a loading state instead of a spurious "no accounts" hint.
+ */
+export function useAccounts(): Account[] | undefined {
+  return useLiveQuery(async () => sortAccounts(await db.accounts.toArray()));
+}
+
+/** Stable empty list for `useAccounts() ?? NO_ACCOUNTS` so memo deps don't churn. */
+export const NO_ACCOUNTS: readonly Account[] = Object.freeze([]);
+
+export async function addAccount(
+  account: Omit<Account, 'id' | 'createdAt' | 'sortOrder'> & { sortOrder?: number }
+) {
+  const existing = await db.accounts.toArray();
+  const sortOrder =
+    account.sortOrder ??
+    (existing.length ? Math.max(...existing.map((a) => a.sortOrder)) + 1 : 0);
+  const id = await db.accounts.add({
+    ...account,
+    name: account.name.trim(),
+    sortOrder,
+    createdAt: new Date(),
+  });
+  await bumpDataVersion();
+  return id;
+}
+
+export async function updateAccount(id: number, changes: Partial<Account>) {
+  const rest: Partial<Account> = { ...changes };
+  delete rest.id;
+  delete rest.createdAt;
+  if (rest.name != null) rest.name = rest.name.trim();
+  await db.accounts.update(id, rest);
+  await bumpDataVersion();
+}
+
+/** Persist a new display order; `orderedIds` lists every account id. */
+export async function reorderAccounts(orderedIds: number[]) {
+  await db.transaction('rw', db.accounts, async () => {
+    for (let i = 0; i < orderedIds.length; i++) {
+      await db.accounts.update(orderedIds[i], { sortOrder: i });
+    }
+  });
+  await bumpDataVersion();
+}
+
+/**
+ * Ensure at least one account exists so holdings and cash always have an
+ * owner. Returns the id of the first account (creating the default if needed).
+ */
+export async function ensureDefaultAccount(): Promise<number> {
+  const accounts = sortAccounts(await db.accounts.toArray());
+  if (accounts[0]?.id != null) return accounts[0].id;
+  const id = await db.accounts.add(newDefaultAccount());
+  await bumpDataVersion();
+  return id;
+}
+
+export interface AccountContents {
+  positions: number;
+  cashAccounts: number;
+  transactions: number;
+}
+
+/** How much data currently references an account. */
+export async function getAccountContents(accountId: number): Promise<AccountContents> {
+  const [tickers, cash, txs] = await Promise.all([
+    readTickers(),
+    db.cashAccounts.where('accountId').equals(accountId).count(),
+    db.transactions.where('accountId').equals(accountId).count(),
+  ]);
+  const positions = tickers.reduce(
+    (n, t) => n + t.positions.filter((p) => p.accountId === accountId).length,
+    0
+  );
+  return { positions, cashAccounts: cash, transactions: txs };
+}
+
+/**
+ * Delete an account. Refuses when it still owns positions or cash unless a
+ * `moveToAccountId` is given, in which case positions, cash, transactions and
+ * dividend records are reassigned first. Positions in a ticker the target
+ * already holds are merged (shares summed, cost basis blended).
+ */
+export async function deleteAccount(id: number, moveToAccountId?: number) {
+  if (moveToAccountId === id) {
+    throw new Error('Cannot move an account into itself.');
+  }
+  const contents = await getAccountContents(id);
+  const hasData = contents.positions > 0 || contents.cashAccounts > 0;
+  if (hasData && moveToAccountId == null) {
+    throw new Error(
+      'This account still holds positions or cash. Move them to another account first.'
+    );
+  }
+  if (moveToAccountId != null && !(await db.accounts.get(moveToAccountId))) {
+    throw new Error('Target account not found.');
+  }
+
+  await db.transaction(
+    'rw',
+    [db.accounts, db.tickers, db.cashAccounts, db.transactions, db.dividendRecords],
+    async () => {
+      if (moveToAccountId != null) {
+        const target = moveToAccountId;
+        const now = new Date();
+        const tickers = (await db.tickers.toArray()).map(normalizeEntry);
+        for (const entry of tickers) {
+          const moving = entry.positions.find((p) => p.accountId === id);
+          if (!moving) continue;
+          const rest = entry.positions.filter((p) => p.accountId !== id);
+          const existing = rest.find((p) => p.accountId === target);
+          if (existing) {
+            const totalShares = existing.shares + moving.shares;
+            existing.avgCost =
+              totalShares > 0
+                ? (existing.shares * existing.avgCost + moving.shares * moving.avgCost) /
+                  totalShares
+                : existing.avgCost;
+            existing.shares = totalShares;
+            existing.drip = existing.drip || moving.drip;
+            existing.addedDate =
+              moving.addedDate < existing.addedDate ? moving.addedDate : existing.addedDate;
+            existing.updatedAt = now;
+          } else {
+            rest.push({ ...moving, accountId: target, updatedAt: now });
+          }
+          await db.tickers.update(entry.ticker, {
+            positions: rest.sort((a, b) => a.accountId - b.accountId),
+          });
+        }
+        await db.cashAccounts
+          .where('accountId')
+          .equals(id)
+          .modify({ accountId: target });
+        await db.transactions
+          .where('accountId')
+          .equals(id)
+          .modify((t: Transaction) => {
+            t.accountId = target;
+            if (t.holdingId) t.holdingId = holdingKey(target, t.ticker);
+          });
+        await db.dividendRecords
+          .where('accountId')
+          .equals(id)
+          .modify((d: DividendRecord) => {
+            d.accountId = target;
+            d.holdingId = holdingKey(target, d.ticker);
+          });
+      } else {
+        // Nothing owned; detach any stray transaction references.
+        await db.transactions
+          .where('accountId')
+          .equals(id)
+          .modify((t: Transaction) => {
+            delete t.accountId;
+            delete t.holdingId;
+          });
+      }
+      await db.accounts.delete(id);
+    }
+  );
+  await bumpDataVersion();
+}
+
+// ---- Holding (position) CRUD ----
+
+const POSITION_FIELDS = [
   'shares',
   'avgCost',
   'currency',
-  'sector',
-  'country',
   'drip',
   'dividendTaxRate',
   'addedDate',
-] as const satisfies readonly (keyof TickerPortfolioInfo)[];
+] as const satisfies readonly (keyof TickerPosition)[];
 
-function pickPortfolioFields(changes: Partial<Holding>): Partial<TickerPortfolioInfo> {
-  const out: Partial<TickerPortfolioInfo> = {};
-  for (const key of PORTFOLIO_FIELDS) {
+function pickPositionFields(changes: Partial<Holding>): Partial<TickerPosition> {
+  const out: Partial<TickerPosition> = {};
+  for (const key of POSITION_FIELDS) {
     const value = changes[key];
     if (value !== undefined) {
       (out as Record<string, unknown>)[key] = value;
@@ -196,6 +380,18 @@ function pickPortfolioFields(changes: Partial<Holding>): Partial<TickerPortfolio
   return out;
 }
 
+function withPortfolioTag(autoTags: string[], held: boolean): string[] {
+  const has = autoTags.includes(PORTFOLIO_AUTO_TAG);
+  if (held && !has) return [...autoTags, PORTFOLIO_AUTO_TAG];
+  if (!held && has) return autoTags.filter((t) => t !== PORTFOLIO_AUTO_TAG);
+  return autoTags;
+}
+
+/**
+ * Add a position for `holding.accountId`. If that account already holds the
+ * ticker, the position is replaced (same semantics as the old single-position
+ * `addHolding`). Other accounts' positions in the ticker are untouched.
+ */
 export async function addHolding(
   holding: Omit<Holding, 'id' | 'createdAt' | 'updatedAt'>
 ) {
@@ -204,62 +400,66 @@ export async function addHolding(
   const reported =
     (await fetchTickerCurrency(ticker)) ??
     normalizeCurrencyWithDefault(holding.currency);
-  const existing = await db.tickers.get(ticker);
-  const portfolio: TickerPortfolioInfo = {
+  const existing = await readTicker(ticker);
+  const previous = existing?.positions.find((p) => p.accountId === holding.accountId);
+  const position: TickerPosition = {
+    accountId: holding.accountId,
     shares: holding.shares,
     avgCost: holding.avgCost,
     currency: reported,
-    country: holding.country ?? '',
-    sector: holding.sector,
     drip: holding.drip ?? false,
     dividendTaxRate: holding.dividendTaxRate ?? 0,
-    addedDate: holding.addedDate ?? now,
-    createdAt: now,
+    addedDate: holding.addedDate ?? previous?.addedDate ?? now,
+    createdAt: previous?.createdAt ?? now,
     updatedAt: now,
   };
-  const autoTags = existing?.autoTags ?? [];
+  const positions = [
+    ...(existing?.positions.filter((p) => p.accountId !== holding.accountId) ?? []),
+    position,
+  ].sort((a, b) => a.accountId - b.accountId);
   await db.tickers.put({
     ticker,
     name: holding.name,
     userTags: existing?.userTags ?? [],
-    autoTags: autoTags.includes(PORTFOLIO_AUTO_TAG)
-      ? autoTags
-      : [...autoTags, PORTFOLIO_AUTO_TAG],
-    addedAt: existing?.addedAt ?? portfolio.addedDate,
+    autoTags: withPortfolioTag(existing?.autoTags ?? [], true),
+    addedAt: existing?.addedAt ?? position.addedDate,
+    sector: holding.sector || existing?.sector || 'Other',
+    country: holding.country || existing?.country || '',
+    positions,
     intrinsicValues: existing?.intrinsicValues ?? [],
-    portfolio,
   });
   await bumpDataVersion();
-  return ticker;
+  return holdingKey(holding.accountId, ticker);
 }
 
 export async function updateHolding(id: string, changes: Partial<Holding>) {
-  const ticker = id.toUpperCase();
-  const existing = await readTicker(ticker);
-  if (!existing?.portfolio) return;
-  const nextTicker = (changes.ticker ?? ticker).toUpperCase();
-  // `Holding` is a flattened view (ticker/name/id + portfolio fields). Only the
-  // portfolio fields belong inside `portfolio`; spreading the whole change set
-  // used to persist `id`, `ticker` and `name` into it (and into the sync file).
-  const portfolioChanges = pickPortfolioFields(changes);
+  const key = parseHoldingKey(id);
+  if (!key) return;
+  const existing = await readTicker(key.ticker);
+  const position = existing?.positions.find((p) => p.accountId === key.accountId);
+  if (!existing || !position) return;
+  const nextTicker = (changes.ticker ?? key.ticker).toUpperCase();
+  // `Holding` is a flattened view: position fields go into the position,
+  // sector/country/name onto the ticker row, and id/ticker/accountId are keys.
+  const updatedPosition: TickerPosition = {
+    ...position,
+    ...pickPositionFields(changes),
+    updatedAt: new Date(),
+  };
   const updated: TickerEntry = {
     ...existing,
     ticker: nextTicker,
     name: changes.name ?? existing.name,
-    portfolio: {
-      ...existing.portfolio,
-      ...portfolioChanges,
-      currency: changes.currency ?? existing.portfolio.currency,
-      addedDate: changes.addedDate ?? existing.portfolio.addedDate,
-      updatedAt: new Date(),
-    },
+    sector: changes.sector ?? existing.sector,
+    country: changes.country ?? existing.country,
+    positions: existing.positions.map((p) =>
+      p.accountId === key.accountId ? updatedPosition : p
+    ),
   };
-  if (!updated.autoTags.includes(PORTFOLIO_AUTO_TAG)) {
-    updated.autoTags = [...updated.autoTags, PORTFOLIO_AUTO_TAG];
-  }
-  if (nextTicker !== ticker) {
+  updated.autoTags = withPortfolioTag(updated.autoTags, true);
+  if (nextTicker !== key.ticker) {
     await db.transaction('rw', db.tickers, async () => {
-      await db.tickers.delete(ticker);
+      await db.tickers.delete(key.ticker);
       await db.tickers.put(updated);
     });
   } else {
@@ -268,14 +468,17 @@ export async function updateHolding(id: string, changes: Partial<Holding>) {
   await bumpDataVersion();
 }
 
+/** Remove one account's position. The ticker stays on the watchlist. */
 export async function deleteHolding(id: string) {
-  const ticker = id.toUpperCase();
-  const existing = await readTicker(ticker);
+  const key = parseHoldingKey(id);
+  if (!key) return;
+  const existing = await readTicker(key.ticker);
   if (!existing) return;
+  const positions = existing.positions.filter((p) => p.accountId !== key.accountId);
   await db.tickers.put({
     ...existing,
-    autoTags: existing.autoTags.filter((t) => t !== PORTFOLIO_AUTO_TAG),
-    portfolio: undefined,
+    autoTags: withPortfolioTag(existing.autoTags, positions.length > 0),
+    positions,
   });
   await bumpDataVersion();
 }
@@ -390,6 +593,7 @@ export async function addWatchlistItem(
     name: item.name,
     userTags: item.tags,
     autoTags: item.autoTags ?? [],
+    positions: [],
     intrinsicValues: [],
     addedAt: new Date(),
   });
@@ -440,12 +644,12 @@ function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
 
 export async function deleteWatchlistItem(id: string) {
   const ticker = id.toUpperCase();
-  const existing = await db.tickers.get(ticker);
+  const existing = await readTicker(ticker);
   if (!existing) return;
   // Every held ticker is on the watchlist by construction; the row also
-  // carries the position. Removing it here would silently delete the holding
+  // carries the positions. Removing it here would silently delete the holdings
   // — the UI hides the button for held tickers, but guard the data layer too.
-  if (existing.portfolio) {
+  if (existing.positions.length > 0) {
     throw new Error(
       `${ticker} is in your portfolio. Remove the holding first.`
     );
@@ -508,18 +712,19 @@ export async function addIntrinsicValue(
     (await fetchTickerCurrency(ticker)) ??
     normalizeCurrencyWithDefault(currency);
   const key = ticker.toUpperCase();
-  const entry = await db.tickers.get(key);
+  const entry = await readTicker(key);
   const intrinsicValues = [
     ...(entry?.intrinsicValues ?? []),
     { value, currency: reported, date: date ?? new Date() },
   ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   await db.tickers.put({
+    ...entry,
     ticker: key,
     name: entry?.name ?? key,
     userTags: entry?.userTags ?? [],
     autoTags: entry?.autoTags ?? [],
     addedAt: entry?.addedAt ?? new Date(),
-    portfolio: entry?.portfolio,
+    positions: entry?.positions ?? [],
     intrinsicValues,
   });
   await bumpDataVersion();
@@ -551,7 +756,7 @@ export async function syncPortfolioToWatchlist() {
   await db.transaction('rw', db.tickers, async () => {
     const entries = (await db.tickers.toArray()).map(normalizeEntry);
     for (const entry of entries) {
-      const hasPortfolio = !!entry.portfolio;
+      const hasPortfolio = entry.positions.length > 0;
       const hasTag = entry.autoTags.includes(PORTFOLIO_AUTO_TAG);
       if (hasPortfolio && !hasTag) {
         await db.tickers.update(entry.ticker, {

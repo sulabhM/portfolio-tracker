@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
-import { addTransaction, useHoldings } from '../../db/hooks';
+import { addTransaction, useHoldings, useAccounts } from '../../db/hooks';
 import {
   DEFAULT_CURRENCY,
   normalizeCurrencyWithDefault,
@@ -8,17 +8,23 @@ import {
 import { fetchTickerCurrency } from '../../services/tickerCurrency';
 import { cn } from '../../utils/format';
 import { CurrencySelect, REPORTED_CURRENCY_HINT } from '../common/CurrencySelect';
+import { AccountSelect } from '../common/AccountSelect';
 
 interface AddTransactionFormProps {
   onDone: () => void;
   defaultTicker?: string;
+  defaultAccountId?: number;
 }
 
 export function AddTransactionForm({
   onDone,
   defaultTicker,
+  defaultAccountId,
 }: AddTransactionFormProps) {
   const holdings = useHoldings();
+  const accountsQuery = useAccounts();
+  const accounts = accountsQuery ?? [];
+  const [pickedAccountId, setAccountId] = useState<number | undefined>();
   const [type, setType] = useState<'buy' | 'sell' | 'dividend'>('buy');
   const [ticker, setTicker] = useState(defaultTicker ?? '');
   const [shares, setShares] = useState('');
@@ -36,7 +42,16 @@ export function AddTransactionForm({
   const currencyLookupRef = useRef(0);
 
   const tickerKey = ticker.toUpperCase().trim();
-  const matchedHolding = holdings.find((h) => h.ticker.toUpperCase() === tickerKey);
+  // Positions in this ticker across accounts; the selected account picks one.
+  const tickerHoldings = holdings.filter((h) => h.ticker.toUpperCase() === tickerKey);
+  // Explicit pick > the page's account filter > the single account holding
+  // this ticker > the first account.
+  const accountId =
+    pickedAccountId ??
+    defaultAccountId ??
+    (tickerHoldings.length === 1 ? tickerHoldings[0].accountId : undefined) ??
+    accounts[0]?.id;
+  const matchedHolding = tickerHoldings.find((h) => h.accountId === accountId);
   const hasMatchedHolding = !!matchedHolding;
   const reportedCurrency =
     !hasMatchedHolding && reported && reported.ticker === tickerKey ? reported.currency : null;
@@ -65,7 +80,8 @@ export function AddTransactionForm({
       : reportedCurrency ?? (await fetchTickerCurrency(ticker)) ?? currency;
     await addTransaction({
       holdingId: matchedHolding?.id,
-      ticker: ticker.toUpperCase().trim(),
+      accountId,
+      ticker: tickerKey,
       type,
       shares: parseFloat(shares) || 0,
       price: parseFloat(price) || 0,
@@ -103,6 +119,23 @@ export function AddTransactionForm({
           ))}
         </div>
       </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+          Account
+        </label>
+        <AccountSelect
+          accounts={accountsQuery}
+          value={accountId}
+          onChange={setAccountId}
+          className={inputClass}
+        />
+        {tickerHoldings.length > 1 && (
+          <p className="text-xs text-gray-500 dark:text-slate-400 mt-1">
+            {tickerKey} is held in {tickerHoldings.length} accounts — pick which one this
+            applies to.
+          </p>
+        )}
+      </div>
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
@@ -118,8 +151,8 @@ export function AddTransactionForm({
             className={inputClass}
           />
           <datalist id="ticker-suggestions">
-            {holdings.map((h) => (
-              <option key={h.id} value={h.ticker} />
+            {[...new Set(holdings.map((h) => h.ticker))].map((t) => (
+              <option key={t} value={t} />
             ))}
           </datalist>
         </div>

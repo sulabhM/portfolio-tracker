@@ -36,29 +36,38 @@ export function useBackfillHoldingCountries() {
 
     backfillingRef.current = true;
 
+    // One Yahoo lookup per ticker; the same security may sit in several accounts.
+    const byTicker = new Map<string, typeof needBackfill>();
+    for (const h of needBackfill) {
+      const key = h.ticker.toUpperCase();
+      byTicker.set(key, [...(byTicker.get(key) ?? []), h]);
+    }
+
     (async () => {
-      for (const h of needBackfill) {
-        checkedRef.current.add(h.ticker.toUpperCase());
+      for (const [ticker, positions] of byTicker) {
+        checkedRef.current.add(ticker);
         try {
-          const info = await lookupTicker(h.ticker);
-          const updates: { country?: string; currency?: string } = {};
-          if (!(h.country ?? '').trim() && info?.country?.trim()) {
-            updates.country = info.country.trim();
-          }
-          if (info?.currency) {
-            const reported = normalizeCurrencyWithDefault(info.currency);
-            const stored = normalizeCurrencyWithDefault(h.currency);
-            if (!(h.currency ?? '').trim() || stored === DEFAULT_CURRENCY) {
-              if (reported !== stored) {
-                updates.currency = reported;
+          const info = await lookupTicker(ticker);
+          for (const h of positions) {
+            const updates: { country?: string; currency?: string } = {};
+            if (!(h.country ?? '').trim() && info?.country?.trim()) {
+              updates.country = info.country.trim();
+            }
+            if (info?.currency) {
+              const reported = normalizeCurrencyWithDefault(info.currency);
+              const stored = normalizeCurrencyWithDefault(h.currency);
+              if (!(h.currency ?? '').trim() || stored === DEFAULT_CURRENCY) {
+                if (reported !== stored) {
+                  updates.currency = reported;
+                }
               }
             }
-          }
-          if (Object.keys(updates).length > 0) {
-            await updateHolding(h.id!, updates);
+            if (Object.keys(updates).length > 0) {
+              await updateHolding(h.id!, updates);
+            }
           }
         } catch (err) {
-          console.warn(`Holding metadata backfill failed for ${h.ticker}:`, err);
+          console.warn(`Holding metadata backfill failed for ${ticker}:`, err);
         }
         await new Promise((r) => setTimeout(r, DELAY_MS));
       }

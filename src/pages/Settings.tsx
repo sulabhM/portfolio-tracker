@@ -4,6 +4,7 @@ import { exportAllData, importAllData } from '../services/dataSync';
 import { exportBackup, parseBackupFile, isTauri } from '../services/fileAdapter';
 import { requestConfirm } from '../utils/confirmBridge';
 import { cn } from '../utils/format';
+import { AccountsManager } from '../components/settings/AccountsManager';
 
 export function Settings() {
   const {
@@ -72,6 +73,8 @@ export function Settings() {
       <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
         Settings
       </h1>
+
+      <AccountsManager />
 
       <section className="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-6 max-w-2xl">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">

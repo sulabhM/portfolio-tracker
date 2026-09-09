@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { Loader2, Check, X } from 'lucide-react';
-import { addHolding, updateHolding } from '../../db/hooks';
+import { addHolding, updateHolding, useAccounts } from '../../db/hooks';
 import { lookupTicker } from '../../services/yahooFinance';
 import { isTauri } from '../../services/fileAdapter';
 import type { Holding } from '../../types';
+import { AccountSelect } from '../common/AccountSelect';
+import { accountLabel } from '../../utils/accounts';
 import {
   DEFAULT_CURRENCY,
   normalizeCurrency,
@@ -17,10 +19,18 @@ import { CurrencySelect, REPORTED_CURRENCY_HINT } from '../common/CurrencySelect
 
 interface AddHoldingFormProps {
   holding?: Holding;
+  /** Preselected account for new holdings (e.g. the one filtered in the view). */
+  defaultAccountId?: number;
   onDone: () => void;
 }
 
-export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
+export function AddHoldingForm({ holding, defaultAccountId, onDone }: AddHoldingFormProps) {
+  const accountsQuery = useAccounts();
+  const accounts = accountsQuery ?? [];
+  // Explicit pick; falls back to the preselected account, then the first one.
+  const [pickedAccountId, setAccountId] = useState<number | undefined>();
+  const accountId =
+    pickedAccountId ?? holding?.accountId ?? defaultAccountId ?? accounts[0]?.id;
   const [ticker, setTicker] = useState(holding?.ticker ?? '');
   const [name, setName] = useState(holding?.name ?? '');
   const [shares, setShares] = useState(holding?.shares?.toString() ?? '');
@@ -101,11 +111,13 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (accountId == null) return;
     // Yahoo's reported currency wins when it reports one; the manual pick is
     // the fallback for tickers Yahoo doesn't know.
     const reported =
       reportedCurrency ?? (await fetchTickerCurrency(ticker)) ?? currency;
     const data = {
+      accountId,
       ticker: ticker.toUpperCase().trim(),
       name: name.trim(),
       shares: parseFloat(shares),
@@ -129,8 +141,32 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
   const inputClass =
     'w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-slate-800 border border-gray-300 dark:border-slate-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent';
 
+  const editingAccount = isEditing
+    ? accounts.find((a) => a.id === holding.accountId)
+    : undefined;
+
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {/* Account */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+          Account
+        </label>
+        {isEditing ? (
+          <p className={cn(inputClass, 'text-gray-600 dark:text-slate-300')}>
+            {editingAccount ? accountLabel(editingAccount) : `Account #${holding.accountId}`}
+          </p>
+        ) : (
+          <AccountSelect
+            accounts={accountsQuery}
+            value={accountId}
+            onChange={setAccountId}
+            className={inputClass}
+            required
+          />
+        )}
+      </div>
+
       {/* Ticker with search (by symbol or company name) and auto-lookup */}
       <div>
         <label className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
@@ -330,7 +366,8 @@ export function AddHoldingForm({ holding, onDone }: AddHoldingFormProps) {
         </button>
         <button
           type="submit"
-          className="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+          disabled={accountId == null}
+          className="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {holding ? 'Update' : 'Add Holding'}
         </button>

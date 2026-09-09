@@ -5,7 +5,13 @@ import {
 import { PORTFOLIO_AUTO_TAG } from '../constants/autoTags';
 import { db } from '../db/database';
 import { normalizeCashAccount } from '../utils/cashAccount';
+import {
+  holdingKey,
+  newDefaultAccount,
+  normalizeTickerEntry,
+} from '../utils/positions';
 import type {
+  Account,
   Transaction,
   Note,
   CashAccount,
@@ -13,7 +19,14 @@ import type {
   TickerEntry as DbTickerEntry,
 } from '../types';
 
-const BACKUP_VERSION = 3;
+/**
+ * v3: single `portfolio` per ticker, global cash accounts.
+ * v4: `accounts` collection; `positions[]` per ticker with sector/country on
+ *     the ticker; `accountId` on cash, transactions and dividend records.
+ * Files at v3 are still accepted on import and upgraded in memory.
+ */
+const BACKUP_VERSION = 4;
+const OLDEST_IMPORTABLE_BACKUP_VERSION = 3;
 
 /**
  * Monotonic versioning metadata carried by both IndexedDB and the synced
@@ -26,14 +39,13 @@ export interface BackupDataVersion {
   updatedAt: string;
 }
 
-/** Per-ticker portfolio info. Present only when the ticker is in the portfolio. */
-export interface TickerPortfolioInfo {
+/** One account's position in a ticker (v4). */
+export interface TickerPositionEntry {
+  accountId: number;
   shares: number;
   avgCost: number;
   /** ISO 4217 currency for avgCost and cost basis. */
   currency: string;
-  sector: string;
-  country: string;
   drip: boolean;
   dividendTaxRate: number;
   /** ISO date string. */
@@ -42,6 +54,31 @@ export interface TickerPortfolioInfo {
   createdAt: string;
   /** ISO date string. */
   updatedAt: string;
+}
+
+/** v3 per-ticker portfolio info (single position, sector/country inline). */
+export interface LegacyTickerPortfolioInfo {
+  shares: number;
+  avgCost: number;
+  currency: string;
+  sector: string;
+  country: string;
+  drip: boolean;
+  dividendTaxRate: number;
+  addedDate: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackupAccount {
+  id: number;
+  name: string;
+  type: Account['type'];
+  institution?: string;
+  notes?: string;
+  sortOrder: number;
+  /** ISO date string. */
+  createdAt: string;
 }
 
 /** Single intrinsic-value entry attached to a ticker. */
@@ -67,8 +104,13 @@ export interface TickerEntry {
   autoTags: string[];
   /** ISO date string for when the ticker was first added to the watchlist. */
   addedAt: string;
-  /** Present iff the ticker is in the portfolio. */
-  portfolio?: TickerPortfolioInfo;
+  /** Security-level classification (v4). */
+  sector?: string;
+  country?: string;
+  /** One per account holding the ticker (v4). Empty when watchlist-only. */
+  positions: TickerPositionEntry[];
+  /** v3 only. Upgraded into `positions` on import. */
+  portfolio?: LegacyTickerPortfolioInfo;
   /** Sorted ascending by date. */
   intrinsicValues: TickerIntrinsicValue[];
 }
@@ -82,6 +124,8 @@ export interface BackupData {
    * version to decide whether the file or the DB is newer.
    */
   dataVersion: BackupDataVersion;
+  /** Absent in v3 files. */
+  accounts: BackupAccount[];
   tickers: TickerEntry[];
   transactions: Array<Omit<Transaction, 'date'> & { date: string }>;
   notes: Array<Omit<Note, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }>;
@@ -123,11 +167,18 @@ function toIso(val: string | Date): string {
   return (val instanceof Date ? val : new Date(val)).toISOString();
 }
 
-function assertCurrentBackupData(data: BackupData): void {
-  if (data.version !== BACKUP_VERSION) {
+function assertImportableBackupData(data: BackupData): void {
+  if (
+    typeof data.version !== 'number' ||
+    data.version < OLDEST_IMPORTABLE_BACKUP_VERSION ||
+    data.version > BACKUP_VERSION
+  ) {
     throw new Error(
-      `Unsupported backup version: ${data.version}. Expected ${BACKUP_VERSION}.`
+      `Unsupported backup version: ${data.version}. Expected ${OLDEST_IMPORTABLE_BACKUP_VERSION}–${BACKUP_VERSION}.`
     );
+  }
+  if (data.version >= 4 && !Array.isArray(data.accounts)) {
+    throw new Error('Invalid backup file: expected an accounts array.');
   }
   if (
     !data.dataVersion ||
@@ -171,26 +222,31 @@ function assertCurrentBackupData(data: BackupData): void {
 }
 
 function serializeTickerEntry(entry: DbTickerEntry): TickerEntry {
+  const positions = entry.positions ?? [];
   const autoTagSet = new Set(entry.autoTags ?? []);
-  if (entry.portfolio) autoTagSet.add(PORTFOLIO_AUTO_TAG);
+  if (positions.length > 0) autoTagSet.add(PORTFOLIO_AUTO_TAG);
   else autoTagSet.delete(PORTFOLIO_AUTO_TAG);
 
-  return {
+  const out: TickerEntry = {
     ticker: entry.ticker.toUpperCase(),
     name: entry.name,
     userTags: entry.userTags ?? [],
     autoTags: Array.from(autoTagSet),
     addedAt: toIso(entry.addedAt),
-    portfolio: entry.portfolio
-      ? {
-          ...entry.portfolio,
-          currency: entry.portfolio.currency ?? DEFAULT_CURRENCY,
-          country: entry.portfolio.country ?? '',
-          addedDate: toIso(entry.portfolio.addedDate),
-          createdAt: toIso(entry.portfolio.createdAt),
-          updatedAt: toIso(entry.portfolio.updatedAt),
-        }
-      : undefined,
+    positions: positions
+      .slice()
+      .sort((a, b) => a.accountId - b.accountId)
+      .map((p) => ({
+        accountId: p.accountId,
+        shares: p.shares,
+        avgCost: p.avgCost,
+        currency: p.currency ?? DEFAULT_CURRENCY,
+        drip: p.drip ?? false,
+        dividendTaxRate: p.dividendTaxRate ?? 0,
+        addedDate: toIso(p.addedDate),
+        createdAt: toIso(p.createdAt),
+        updatedAt: toIso(p.updatedAt),
+      })),
     intrinsicValues: (entry.intrinsicValues ?? [])
       .slice()
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
@@ -200,33 +256,28 @@ function serializeTickerEntry(entry: DbTickerEntry): TickerEntry {
         date: toIso(iv.date),
       })),
   };
+  if (entry.sector != null) out.sector = entry.sector;
+  if (entry.country != null) out.country = entry.country;
+  return out;
 }
 
-function deserializeTickerEntry(entry: TickerEntry): DbTickerEntry {
-  const ticker = entry.ticker.toUpperCase();
-  const autoTagSet = new Set(entry.autoTags ?? []);
-  if (entry.portfolio) autoTagSet.add(PORTFOLIO_AUTO_TAG);
+/** Accepts both v3 (`portfolio`) and v4 (`positions`) entries. */
+function deserializeTickerEntry(
+  entry: TickerEntry,
+  defaultAccountId: number
+): DbTickerEntry {
+  const normalized = normalizeTickerEntry(entry, defaultAccountId);
+  const autoTagSet = new Set(normalized.autoTags);
+  if (normalized.positions.length > 0) autoTagSet.add(PORTFOLIO_AUTO_TAG);
   else autoTagSet.delete(PORTFOLIO_AUTO_TAG);
-
   return {
-    ticker,
-    name: entry.name,
-    userTags: entry.userTags.slice(),
+    ...normalized,
     autoTags: Array.from(autoTagSet),
-    addedAt: toDate(entry.addedAt),
-    portfolio: entry.portfolio
-      ? {
-          ...entry.portfolio,
-          currency: entry.portfolio.currency ?? DEFAULT_CURRENCY,
-          country: entry.portfolio.country ?? '',
-          drip: entry.portfolio.drip ?? false,
-          dividendTaxRate: entry.portfolio.dividendTaxRate ?? 0,
-          addedDate: toDate(entry.portfolio.addedDate),
-          createdAt: toDate(entry.portfolio.createdAt),
-          updatedAt: toDate(entry.portfolio.updatedAt),
-        }
-      : undefined,
-    intrinsicValues: (entry.intrinsicValues ?? [])
+    positions: normalized.positions.map((p) => ({
+      ...p,
+      currency: normalizeCurrencyWithDefault(p.currency),
+    })),
+    intrinsicValues: normalized.intrinsicValues
       .map((iv) => ({
         value: iv.value,
         currency: iv.currency ?? DEFAULT_CURRENCY,
@@ -236,8 +287,35 @@ function deserializeTickerEntry(entry: TickerEntry): DbTickerEntry {
   };
 }
 
+function serializeAccount(a: Account): BackupAccount {
+  const out: BackupAccount = {
+    id: a.id as number,
+    name: a.name,
+    type: a.type,
+    sortOrder: a.sortOrder,
+    createdAt: toIso(a.createdAt),
+  };
+  if (a.institution) out.institution = a.institution;
+  if (a.notes) out.notes = a.notes;
+  return out;
+}
+
+function deserializeAccount(a: BackupAccount): Account {
+  const out: Account = {
+    id: a.id,
+    name: a.name,
+    type: a.type ?? 'other',
+    sortOrder: typeof a.sortOrder === 'number' ? a.sortOrder : 0,
+    createdAt: toDate(a.createdAt ?? new Date()),
+  };
+  if (a.institution) out.institution = a.institution;
+  if (a.notes) out.notes = a.notes;
+  return out;
+}
+
 function serializeCashAccount(c: CashAccount): BackupCashAccount {
   const out: BackupCashAccount = {
+    accountId: c.accountId,
     name: c.name,
     principal: c.principal,
     depositDate: toIso(c.depositDate),
@@ -257,16 +335,66 @@ function serializeCashAccount(c: CashAccount): BackupCashAccount {
 }
 
 function deserializeCashAccount(
-  c: BackupCashAccount | LegacyBackupCashAccount
+  c: BackupCashAccount | LegacyBackupCashAccount,
+  defaultAccountId: number
 ): CashAccount {
-  const account = normalizeCashAccount(c);
+  const account = normalizeCashAccount(c, defaultAccountId);
   account.currency = normalizeCurrencyWithDefault(account.currency);
   return account;
+}
+
+/**
+ * Accounts to restore, plus the id legacy rows (no `accountId`) should be
+ * attached to. A v3 file has no accounts: synthesize the default one. A v4
+ * file whose rows reference an unknown account gets a default appended too,
+ * so nothing is orphaned.
+ */
+function resolveAccounts(data: BackupData): {
+  accounts: Account[];
+  defaultAccountId: number;
+} {
+  const accounts = (data.accounts ?? []).map(deserializeAccount);
+  const known = new Set(accounts.map((a) => a.id as number));
+  const referenced = new Set<number>();
+  for (const t of data.tickers) {
+    for (const p of t.positions ?? []) referenced.add(p.accountId);
+  }
+  for (const c of data.cashAccounts as Array<{ accountId?: number }>) {
+    if (c.accountId != null) referenced.add(c.accountId);
+  }
+  const hasUnknownRefs = [...referenced].some((id) => !known.has(id));
+
+  let defaultAccountId: number;
+  if (accounts.length === 0 || hasUnknownRefs) {
+    // Mint a default with an id nothing else uses.
+    const nextId = Math.max(0, ...known, ...referenced) + 1;
+    accounts.push({ ...newDefaultAccount(), id: nextId });
+    known.add(nextId);
+    defaultAccountId = nextId;
+  } else {
+    // Legacy rows (no accountId) attach to the first account by display order.
+    defaultAccountId = accounts
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder)[0].id as number;
+  }
+
+  // Point unknown references at the default account.
+  for (const t of data.tickers) {
+    for (const p of t.positions ?? []) {
+      if (!known.has(p.accountId)) p.accountId = defaultAccountId;
+    }
+  }
+  for (const c of data.cashAccounts as Array<{ accountId?: number }>) {
+    if (c.accountId != null && !known.has(c.accountId)) c.accountId = defaultAccountId;
+  }
+
+  return { accounts, defaultAccountId };
 }
 
 export async function exportAllData(): Promise<BackupData> {
   const [
     dataVersionRow,
+    accounts,
     tickers,
     transactions,
     notes,
@@ -274,6 +402,7 @@ export async function exportAllData(): Promise<BackupData> {
     dividendRecords,
   ] = await Promise.all([
     db.meta.get('dataVersion'),
+    db.accounts.toArray(),
     db.tickers.toArray(),
     db.transactions.toArray(),
     db.notes.toArray(),
@@ -290,6 +419,10 @@ export async function exportAllData(): Promise<BackupData> {
     version: BACKUP_VERSION,
     exportedAt: new Date().toISOString(),
     dataVersion,
+    accounts: accounts
+      .filter((a) => a.id != null)
+      .map(serializeAccount)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id),
     tickers: tickers
       .map(serializeTickerEntry)
       .sort((a, b) => a.ticker.localeCompare(b.ticker)),
@@ -308,11 +441,14 @@ export async function exportAllData(): Promise<BackupData> {
 }
 
 export async function importAllData(data: BackupData): Promise<void> {
-  assertCurrentBackupData(data);
+  assertImportableBackupData(data);
+  const { accounts, defaultAccountId } = resolveAccounts(data);
+  const accountIds = new Set(accounts.map((a) => a.id as number));
 
   await db.transaction(
     'rw',
     [
+      db.accounts,
       db.transactions,
       db.notes,
       db.cashAccounts,
@@ -321,19 +457,35 @@ export async function importAllData(data: BackupData): Promise<void> {
       db.meta,
     ],
     async () => {
+      await db.accounts.clear();
       await db.transactions.clear();
       await db.notes.clear();
       await db.cashAccounts.clear();
       await db.dividendRecords.clear();
       await db.tickers.clear();
-      await db.tickers.bulkPut(data.tickers.map(deserializeTickerEntry));
+      await db.accounts.bulkPut(accounts);
+      await db.tickers.bulkPut(
+        data.tickers.map((t) => deserializeTickerEntry(t, defaultAccountId))
+      );
 
       await db.transactions.bulkAdd(
-        data.transactions.map((t) => ({
-          ...t,
-          currency: t.currency ?? DEFAULT_CURRENCY,
-          date: toDate(t.date),
-        }))
+        data.transactions.map((t) => {
+          const tx: Transaction = {
+            ...t,
+            currency: t.currency ?? DEFAULT_CURRENCY,
+            date: toDate(t.date),
+          };
+          // v3 rows: holdingId was the bare ticker and there was no accountId.
+          if (tx.holdingId) {
+            if (tx.accountId == null || !accountIds.has(tx.accountId)) {
+              tx.accountId = defaultAccountId;
+            }
+            if (!tx.holdingId.includes(':')) {
+              tx.holdingId = holdingKey(tx.accountId, tx.ticker);
+            }
+          }
+          return tx;
+        })
       );
       await db.notes.bulkAdd(
         data.notes.map((n) => ({
@@ -343,14 +495,26 @@ export async function importAllData(data: BackupData): Promise<void> {
         }))
       );
       await db.cashAccounts.bulkAdd(
-        (data.cashAccounts as Array<BackupCashAccount | LegacyBackupCashAccount>)
-          .map(deserializeCashAccount)
+        (data.cashAccounts as Array<BackupCashAccount | LegacyBackupCashAccount>).map(
+          (c) => deserializeCashAccount(c, defaultAccountId)
+        )
       );
       await db.dividendRecords.bulkAdd(
-        data.dividendRecords.map((d) => ({
-          ...d,
-          processedAt: toDate(d.processedAt),
-        }))
+        data.dividendRecords.map((d) => {
+          const accountId =
+            d.accountId != null && accountIds.has(d.accountId)
+              ? d.accountId
+              : defaultAccountId;
+          return {
+            ...d,
+            accountId,
+            holdingId:
+              d.holdingId && d.holdingId.includes(':')
+                ? d.holdingId
+                : holdingKey(accountId, d.ticker),
+            processedAt: toDate(d.processedAt),
+          };
+        })
       );
 
       await db.meta.put({

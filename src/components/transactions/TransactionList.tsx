@@ -4,22 +4,29 @@ import {
   ArrowDownRight,
   DollarSign,
 } from 'lucide-react';
-import type { Transaction } from '../../types';
+import type { Account, Transaction } from '../../types';
 import { deleteTransaction } from '../../db/hooks';
 import { formatCurrency, formatMoney, formatDate, cn } from '../../utils/format';
 import { confirmBeforeDelete } from '../../utils/confirmBeforeDelete';
 
 interface TransactionListProps {
   transactions: Transaction[];
+  accounts?: Account[];
+  /** Show the owning account on each row (useful when not filtered to one). */
+  showAccount?: boolean;
   filterType: string;
   onFilterChange: (type: string) => void;
 }
 
 export function TransactionList({
   transactions,
+  accounts = [],
+  showAccount = false,
   filterType,
   onFilterChange,
 }: TransactionListProps) {
+  const accountName = (id: number | undefined) =>
+    id == null ? undefined : accounts.find((a) => a.id === id)?.name ?? `Account #${id}`;
   async function handleDelete(tx: Transaction) {
     if (tx.id == null) return;
     await confirmBeforeDelete(
@@ -95,6 +102,9 @@ export function TransactionList({
               <p className="text-xs text-gray-500 dark:text-slate-400">
                 {tx.shares} shares @ {formatMoney(tx.price, tx.currency)} &middot;{' '}
                 {formatDate(tx.date)}
+                {showAccount && accountName(tx.accountId) && (
+                  <> &middot; {accountName(tx.accountId)}</>
+                )}
               </p>
               {tx.notes && (
                 <p className="text-xs text-gray-400 dark:text-slate-500 mt-0.5 truncate">

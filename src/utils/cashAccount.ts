@@ -168,8 +168,12 @@ type RawCashAccount = Partial<
  * the principal as of `lastInterestDate` (the point up to which interest had
  * been credited); `daily`/`monthly` compounding maps to a compounded deposit
  * with no maturity date yet, and `none` to yearly simple-interest payouts.
+ * Rows without an `accountId` (pre-accounts) are assigned `defaultAccountId`.
  */
-export function normalizeCashAccount(raw: RawCashAccount): CashAccount {
+export function normalizeCashAccount(
+  raw: RawCashAccount,
+  defaultAccountId: number
+): CashAccount {
   const createdAt = toValidDate(raw.createdAt) ?? new Date();
   const principal = Number.isFinite(raw.principal)
     ? (raw.principal as number)
@@ -194,6 +198,10 @@ export function normalizeCashAccount(raw: RawCashAccount): CashAccount {
   }
 
   const account: CashAccount = {
+    accountId:
+      typeof raw.accountId === 'number' && Number.isInteger(raw.accountId)
+        ? raw.accountId
+        : defaultAccountId,
     name: raw.name ?? '',
     principal,
     depositDate,
